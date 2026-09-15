@@ -118,7 +118,7 @@ codebase = [
     #
     #
     #
-    "tree-sitter-language-pack>=1.12.5,<1.17",
+    "tree-sitter-language-pack>=1.12.5,<1.19",
     "networkx>=3.0",
     # source: ADR-0874
     #
@@ -634,10 +634,10 @@ dev = [
 #
 #
 lint = [
-    "ruff==0.16.6",
+    "ruff==0.16.7",
 ]
 typecheck = [
-    "pyright==1.1.411",
+    "pyright==1.1.414",
 ]
 packaging = [
     "build>=1.2.0",
