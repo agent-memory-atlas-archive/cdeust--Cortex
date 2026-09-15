@@ -255,3 +255,25 @@ def _category_for_phrase(phrase: str) -> str:
             if p == phrase:
                 return cat
     return "unknown"
+
+
+def resolve_global_scope(
+    content: str,
+    tags: list[str],
+    *,
+    explicit: bool,
+    team_decision: bool,
+) -> tuple[bool, str]:
+    """Return (is_global, reason) for a new memory.
+
+    An explicit request wins, then team propagation of decisions (the caller
+    evaluates team_scope.is_team_decision), then the content detector.
+
+    source: ADR-0200
+    source: ADR-0184"""
+    if explicit:
+        return True, "explicit"
+    if team_decision:
+        return True, "team_decision"
+    detected, _score, reason = detect_global(content, tags)
+    return detected, reason
