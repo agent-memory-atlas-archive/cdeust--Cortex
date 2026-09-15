@@ -20,6 +20,10 @@ from mcp_server.handlers import (
     wiki_verify,
     wiki_write,
 )
+from mcp_server.handlers.wiki_purge import (
+    DEFAULT_SHALLOW_THRESHOLD,
+    DEFAULT_STUB_THRESHOLD,
+)
 from mcp_server.handlers._tool_meta import tool_kwargs
 from mcp_server.tool_error_handler import safe_handler
 
@@ -186,11 +190,26 @@ def _register_wiki_purge(mcp: MCPServer) -> None:
     async def tool_wiki_purge(
         apply: bool = False,
         kind: str | None = None,
+        purge_stubs: bool = True,
+        purge_classifier_rejects: bool = True,
+        stub_threshold: float = DEFAULT_STUB_THRESHOLD,
+        max_purges: int | None = None,
+        purge_shallow: bool = True,
+        shallow_threshold: int = DEFAULT_SHALLOW_THRESHOLD,
     ) -> dict[str, Any]:
         """Re-evaluate and purge wiki pages that fail the current classifier."""
         return await safe_handler(
             wiki_purge.handler,
-            {"apply": apply, "kind": kind},
+            {
+                "apply": apply,
+                "kind": kind,
+                "purge_stubs": purge_stubs,
+                "purge_classifier_rejects": purge_classifier_rejects,
+                "stub_threshold": stub_threshold,
+                "max_purges": max_purges,
+                "purge_shallow": purge_shallow,
+                "shallow_threshold": shallow_threshold,
+            },
             tool_name="wiki_purge",
         )
 
