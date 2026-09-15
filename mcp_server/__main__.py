@@ -44,10 +44,10 @@ from mcp_server import (
     tool_registry_nav,
     tool_registry_wiki,
 )
+from mcp_server.hooks.wiring import wire_composition_root
 from mcp_server.core import telemetry
 from mcp_server.telemetry_middleware import TelemetryMiddleware
 from mcp_server.tool_profile_middleware import ToolProfileMiddleware
-from mcp_server.core.wiki_axis_registry import configure_default_wiki_root
 from mcp_server.core.wiki_classifier import configure_user_rules_provider
 from mcp_server.handlers._tool_meta import apply_output_schemas, apply_param_docs
 from mcp_server.infrastructure.config import WIKI_ROOT
@@ -62,7 +62,7 @@ from mcp_server.infrastructure.wiki_schema_reader import load_registry
 # source: ADR-0093
 
 
-configure_default_wiki_root(lambda: WIKI_ROOT)
+wire_composition_root()
 configure_user_rules_provider(lambda: load_registry(WIKI_ROOT).rules)
 
 # source: ADR-0093

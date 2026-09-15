@@ -85,4 +85,7 @@ def _close_endpoint(path: Path, descriptor: int) -> None:
 
 
 if __name__ == "__main__":
+    from mcp_server.hooks.wiring import wire_composition_root  # noqa: PLC0415 — source: issue #560
+
+    wire_composition_root()
     main()

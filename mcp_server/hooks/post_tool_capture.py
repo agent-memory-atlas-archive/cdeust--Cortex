@@ -317,9 +317,15 @@ def _capture_enabled(event: dict[str, Any]) -> bool:
 
 
 def _dispatch_with_store_cleanup(event: dict[str, Any]) -> None:
-    """CLI lifecycle scope starts only after the mode admits this event."""
+    """CLI lifecycle scope starts only after the mode admits this event.
+
+    source: issue #560 -- core seams are wired here, after the capture-mode
+    gate, so excluded events never import core or infrastructure (W3-1b)."""
     if not _capture_enabled(event):
         return
+    from mcp_server.hooks.wiring import wire_composition_root  # noqa: PLC0415 — source: issue #560
+
+    wire_composition_root()
     from mcp_server.hooks._store_lifecycle import close_shared_store_on_exit  # noqa: PLC0415 — W3-1b: no teardown store import for excluded events
 
     # source: ADR-0495

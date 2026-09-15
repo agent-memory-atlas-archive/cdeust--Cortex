@@ -25,7 +25,10 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from mcp_server.hooks.wiring import wire_composition_root  # source: issue #560
 from mcp_server.handlers.ingest_codebase import handler
+
+wire_composition_root()
 
 _console = Console()
 
