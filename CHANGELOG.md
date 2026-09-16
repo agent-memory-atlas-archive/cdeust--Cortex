@@ -8,6 +8,41 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The host-contract verifier counts the tools the server registers
+  (ADR-1077).** `scripts/verify_mcp_hosts.py` held its own floor of 52 with a
+  ceiling three above, so it stayed right through the move to 54 (ADR-1066)
+  and only failed when the prediction tools took the count to 57, blocking two
+  CI jobs on a number nothing had updated. `mcp_server/tool_surface.py` now
+  reads the surface from the registry modules and the verifier derives its
+  bounds from it, with a test pinning both against what `register_all`
+  actually registers. The review of that fix found three more copies, all
+  older than it: `.bestpractices.json` named the pinned test at 52 inside an
+  identifier, where the claim regex could not see it; `.claude-plugin/
+  marketplace.json` advertised 50 tools to every install and was scanned by
+  nothing; and the docker-smoke floor was a bare literal. The first two are
+  corrected and now gate-checked, the marketplace one by a targeted check
+  because that same field also recounts the plugin's version history, and the
+  third is pinned by a test.
+
+- **Prediction records, and a score for the confidences they carry (#597).**
+  Cortex stored what happened and never what was expected, so nothing it held
+  could turn out wrong in a way it noticed: 796 procedural skills mined from
+  the maintainer's transcripts all sit at proficiency 0.5 because no session
+  records an outcome. Three tools now close that loop. `predict` writes a
+  falsifiable prediction with the confidence held before the outcome is known;
+  `resolve_prediction` settles it against an observation, naming the verdict,
+  the kind of source that decided it and a reference to that source; and
+  `calibration` returns the mean squared distance between confidence and
+  outcome, the scale most contemporary writing calls the Brier score (Brier's
+  1950 paper reports twice it), with the 0.25 a constant 0.5 forecast earns
+  and the per-band frequencies the mean cannot show. Cortex never
+  fetches the evidence and knows nothing about any forge or review
+  convention, which is what makes the contract work in any repository
+  (ADR-1076). The table lives on both backends. Standalone tool count 54 to
+  57, 60 with both upstream integrations.
+
+### Added
+
 - **The Path B draft tools are exposed over MCP (#579).** `wiki_get_draft`
   and `wiki_refine_draft` had existed as handlers since ADR-0467 without ever
   being registered, so no client could call them and `wiki_get_draft`'s own

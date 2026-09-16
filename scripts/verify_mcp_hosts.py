@@ -46,9 +46,18 @@ from mcp_server.tool_profiles import LEAN_TOOL_NAMES  # noqa: E402
 CLIENTS = ("claude-code", "gemini-cli", "codex-cli")
 PROFILES: tuple[Literal["full", "lean"], ...] = ("full", "lean")
 STORAGE_SELECTIONS: tuple[Literal["sqlite", "auto"], ...] = ("sqlite", "auto")
+
+
 # source: ADR-0788
-MIN_FULL_TOOL_COUNT = 52
-MAX_FULL_TOOL_COUNT = MIN_FULL_TOOL_COUNT + 3
+# The correction is recorded as ADR number 1077.
+def full_tool_bounds() -> tuple[int, int]:
+    """The surface's own bounds, imported late: the mcp-host-config job runs
+    without the MCP SDK and verifies lean profiles only."""
+    from mcp_server.tool_surface import (  # noqa: PLC0415 — see docstring
+        full_tool_bounds as surface_bounds,
+    )
+
+    return surface_bounds()
 
 
 def _result(
@@ -101,11 +110,13 @@ def _verify_tool_surface(
             raise ContractError(
                 f"{case.label}: lean surface drifted; missing={missing}, extra={extra}"
             )
-    elif not MIN_FULL_TOOL_COUNT <= len(tools) <= MAX_FULL_TOOL_COUNT:
-        raise ContractError(
-            f"{case.label}: discovered {len(tools)} full tools; expected "
-            f"{MIN_FULL_TOOL_COUNT}..{MAX_FULL_TOOL_COUNT}"
-        )
+    else:
+        minimum, maximum = full_tool_bounds()
+        if not minimum <= len(tools) <= maximum:
+            raise ContractError(
+                f"{case.label}: discovered {len(tools)} full tools; expected "
+                f"{minimum}..{maximum}"
+            )
     if "memory_stats" not in tool_names:
         raise ContractError(f"{case.label}: memory_stats was not discovered")
     return len(tools)
