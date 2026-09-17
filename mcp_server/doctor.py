@@ -19,6 +19,10 @@ from mcp_server.infrastructure.memory_config import get_memory_settings
 from mcp_server.infrastructure.sqlite_store import SqliteMemoryStore
 from mcp_server.infrastructure.backend_marker import effective_backend
 from mcp_server.doctor_mcp import run_mcp
+from mcp_server.shared.subprocess_safe import run_with_hard_timeout
+
+# source: validate_memory.py:29 precedent (_GIT_CHECK_TIMEOUT_S)
+_WORKTREE_LIST_TIMEOUT_S = 2.0
 
 
 def ensure_reranker_ready():
@@ -247,6 +251,154 @@ def _codebase_pipeline() -> Check:
     )
 
 
+def _worktree_list() -> list[dict[str, object]] | None:
+    """Parse ``git worktree list --porcelain -z``, main worktree first.
+
+    precondition: none — safe to call outside a git checkout.
+    postcondition: returns one dict per worktree block, in the order git
+    printed them (the main worktree is always first — git-worktree(1)
+    section list). Each dict carries ``path`` (str), ``bare`` (bool),
+    ``prunable`` (bool). Returns ``None`` when ``git`` is missing, the cwd
+    isn't a git checkout, or the command times out — every failure mode
+    of ``run_with_hard_timeout`` collapses to the same "inspection unavailable"
+    signal, never a raised exception. Empty successful output returns [].
+
+    source: ADR-1079"""
+    out = run_with_hard_timeout(
+        ["git", "worktree", "list", "--porcelain", "-z"],
+        cwd=Path.cwd(),
+        timeout=_WORKTREE_LIST_TIMEOUT_S,
+    )
+    if out is None:
+        return None
+    entries: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for line in out.split("\0"):
+        if line.startswith("worktree "):
+            if current is not None:
+                entries.append(current)
+            current = {
+                "path": line[len("worktree ") :],
+                "bare": False,
+                "prunable": False,
+            }
+        elif line == "bare" and current is not None:
+            current["bare"] = True
+        elif line.startswith("prunable") and current is not None:
+            current["prunable"] = True
+    if current is not None:
+        entries.append(current)
+    return entries
+
+
+def _worktree_classification(entries: list[dict[str, object]]) -> tuple[bool, str]:
+    """Classify worktree ``entries`` (``_worktree_list()`` output, main
+    first) against the allowed-location rule.
+
+    postcondition: ``ok`` is True for "no registered worktrees" (empty
+    ``entries``), a bare main repo, and full compliance; False carries
+    every offending resolved path in ``detail``. The allowed roots are
+    derived from ``entries[0]`` (the main worktree — always first, per
+    git-worktree(1) section list), never from ``git rev-parse
+    --show-toplevel``, which resolves to a linked worktree's own path
+    when run from inside one and would false-positive on every sibling.
+
+    source: ADR-1079 (rule: docs/agent-guidance.md, What NOT to do)"""
+    if not entries:
+        return True, "no registered worktrees"
+    main = entries[0]
+    if main.get("bare"):
+        return True, "bare repository — rule not applicable"
+    allowed_roots = [
+        (Path(str(main["path"])) / host / "worktrees").resolve()
+        for host in (".claude", ".Codex")
+    ]
+    outside = [
+        str(Path(str(e["path"])).resolve())
+        for e in entries[1:]
+        if not e.get("prunable")
+        and not any(
+            _under(Path(str(e["path"])).resolve(), root) for root in allowed_roots
+        )
+    ]
+    allowed = " or ".join(map(str, allowed_roots))
+    if not outside:
+        return True, f"all worktrees under {allowed}"
+    return False, f"outside {allowed}: {', '.join(outside)}"
+
+
+def _is_git_checkout(start: Path) -> bool:
+    """True iff ``start`` or an ancestor holds a ``.git`` entry — the same
+    upward walk Git itself performs to discover a repository.
+
+    precondition: none.
+    postcondition: returns True on the first ancestor (inclusive) carrying
+    a ``.git`` path, file or directory (a linked worktree's ``.git`` is a
+    file, not a directory); False once the filesystem root is reached
+    without finding one. No subprocess: this only ever needs to tell "no
+    repository here" apart from "git couldn't answer", which a failed
+    subprocess call can't distinguish on its own.
+
+    source: git-rev-parse(1) "repository discovery" (upward walk from cwd
+    for a `.git` entry, halting at a filesystem or ceiling boundary)"""
+    current = start.resolve()
+    while True:
+        if (current / ".git").exists():
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
+def _worktree_locations() -> Check:
+    """Optional: WARN when a registered worktree lives outside
+    the host-specific ``.claude/worktrees`` or ``.Codex/worktrees``.
+    Reports only — never fixes,
+    never moves the worktree, never fails doctor's exit code
+    (``optional=True``).
+
+    postcondition: a project that is not a Git checkout is an ordinary
+    condition for an MCP server whose cwd is whatever the host opened, not
+    a failed inspection — ``ok`` is True with detail "not a git checkout".
+    The WARN (``ok`` False) is reserved for the cases Git itself cannot
+    answer for: the binary missing from PATH, or the listing timing out.
+
+    source: ADR-1079 (rule reported: docs/agent-guidance.md, What NOT to do)"""
+    if not _is_git_checkout(Path.cwd()):
+        return Check(
+            "worktree locations (optional)", True, "not a git checkout", optional=True
+        )
+    entries = _worktree_list()
+    if entries is None:
+        return Check(
+            "worktree locations (optional)",
+            False,
+            "Unable to inspect worktree locations: Git unavailable or command failed.",
+            "Install Git and ensure it's on PATH; retry "
+            "git worktree list --porcelain -z.",
+            optional=True,
+        )
+    ok, detail = _worktree_classification(entries)
+    fix = (
+        ""
+        if ok
+        else "Move or remove these worktrees — the allowed locations "
+        "are <repo>/.claude/worktrees/<name>/ or <repo>/.Codex/worktrees/<name>/ "
+        "(source: docs/agent-guidance.md, What NOT to do)."
+    )
+    return Check("worktree locations (optional)", ok, detail, fix, optional=True)
+
+
+def _under(path: Path, root: Path) -> bool:
+    """True iff ``path`` is ``root`` or a descendant of it (both resolved)."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _i10_config() -> Check:
     """Verify pool config respects I10 invariant without opening a pool."""
     try:
@@ -301,6 +453,7 @@ CHECKS: list[Callable[[], Check]] = [
     _methodology_dir,
     _i10_config,
     _codebase_pipeline,  # optional — doesn't fail doctor
+    _worktree_locations,  # optional — doesn't fail doctor
 ]
 
 SQLITE_CHECKS: list[Callable[[], Check]] = [
@@ -309,6 +462,7 @@ SQLITE_CHECKS: list[Callable[[], Check]] = [
     _methodology_dir,
     _i10_config,
     _codebase_pipeline,  # optional — doesn't fail doctor
+    _worktree_locations,  # optional — doesn't fail doctor
 ]
 
 

@@ -10,6 +10,9 @@ readiness).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from mcp_server.doctor import (
@@ -20,6 +23,8 @@ from mcp_server.doctor import (
     _pg_driver,
     _python_version,
     _sqlite_store,
+    _worktree_locations,
+    _worktree_classification,
     active_checks,
     ensure_reranker_ready,
     run,
@@ -93,6 +98,130 @@ class TestBackendAwareChecks:
             memory_config.get_memory_settings.cache_clear()
         assert check.ok is True
         assert "memories" in check.detail
+
+
+@pytest.fixture
+def real_git_repo(tmp_path):
+    """Bare-bones repo with an initial commit, git identity set explicitly
+    (CI runners have none) — mirrors
+    tests_py/handlers/test_auto_task_record_writer_git_commits.py's
+    module-local fixture rather than importing across modules."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "initial commit"], cwd=repo, check=True
+    )
+    return repo
+
+
+class TestWorktreeLocations:
+    """source: ADR-1079 — the check reports docs/agent-guidance.md, What NOT to do,
+    never blocks (optional=True), never rewrites the rule."""
+
+    @pytest.mark.parametrize("host", [".claude", ".Codex"])
+    def test_host_worktree_passes_from_linked_checkout(
+        self, real_git_repo, monkeypatch, host
+    ):
+        linked = real_git_repo / host / "worktrees" / "good"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "--detach", str(linked)],
+            cwd=real_git_repo,
+            check=True,
+        )
+        monkeypatch.chdir(linked)
+        check = _worktree_locations()
+        assert check.ok is True
+        assert check.optional is True
+
+    def test_both_hosts_and_prunable_entries(self, tmp_path):
+        entries = [{"path": str(tmp_path)}] + [
+            {"path": str(tmp_path / host / "worktrees" / "good")}
+            for host in (".claude", ".Codex")
+        ]
+        entries.append({"path": str(tmp_path / "removed"), "prunable": True})
+        assert _worktree_classification(entries)[0] is True
+        assert _worktree_classification([{"path": str(tmp_path), "bare": True}])[0]
+
+    def test_rejects_prefix_sibling_and_symlink_escape(self, tmp_path):
+        allowed = tmp_path / ".Codex" / "worktrees"
+        allowed.mkdir(parents=True)
+        outside = tmp_path / ".Codex" / "worktrees-other"
+        outside.mkdir()
+        link = allowed / "escape"
+        link.symlink_to(outside, target_is_directory=True)
+        for path in (outside, link):
+            ok, detail = _worktree_classification(
+                [{"path": str(tmp_path)}, {"path": str(path)}]
+            )
+            assert ok is False
+            assert str(outside.resolve()) in detail
+
+    def test_main_checkout_only_passes(self, real_git_repo, monkeypatch):
+        monkeypatch.chdir(real_git_repo)
+        check = _worktree_locations()
+        assert check.ok is True
+        assert check.optional is True
+
+    def test_not_a_git_checkout_passes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # plain dir, no .git
+        check = _worktree_locations()
+        assert check.ok is True
+        assert check.detail == "not a git checkout"
+        assert check.optional is True
+
+    def test_git_unavailable_in_a_checkout_warns(self, real_git_repo, monkeypatch):
+        monkeypatch.chdir(real_git_repo)
+        monkeypatch.setattr(
+            "mcp_server.doctor.run_with_hard_timeout", lambda *a, **k: None
+        )
+        check = _worktree_locations()
+        assert check.ok is False
+        assert "Unable to inspect" in check.detail
+        assert check.optional is True
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows forbids newlines in paths"
+    )
+    def test_reports_exact_path_with_newline(self, real_git_repo, monkeypatch):
+        outside = real_git_repo.parent / "outside\nworktree "
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "--detach", str(outside)],
+            cwd=real_git_repo,
+            check=True,
+        )
+        monkeypatch.chdir(real_git_repo)
+        check = _worktree_locations()
+        assert check.ok is False
+        assert str(outside.resolve()) in check.detail
+
+    def test_flags_worktree_outside_claude_worktrees(self, real_git_repo, monkeypatch):
+        subprocess.run(
+            ["git", "worktree", "add", "-q", ".claude/worktrees/good", "-b", "good"],
+            cwd=real_git_repo,
+            check=True,
+        )
+        outside = real_git_repo.parent / "outside-wt"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", str(outside), "-b", "bad"],
+            cwd=real_git_repo,
+            check=True,
+        )
+        monkeypatch.chdir(real_git_repo)
+
+        check = _worktree_locations()
+
+        assert check.ok is False
+        assert check.optional is True
+        good_path = str((real_git_repo / ".claude" / "worktrees" / "good").resolve())
+        assert good_path not in check.detail
+        assert str(outside.resolve()) in check.detail
 
 
 class TestEnsureRerankerReady:
