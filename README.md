@@ -154,6 +154,35 @@ remember({ content: "...", supersedes_id: 4360411 })
 // → { action: "superseded", memory_id: 4360412, superseded_id: 4360411 }
 ```
 
+### Whether it was right
+
+A memory records what happened. A prediction records what was expected before the outcome
+was known, so that Cortex can later find out it was wrong. `predict` writes a falsifiable
+claim with the confidence held at the time; `resolve_prediction` settles it against an
+observation the caller supplies, naming the verdict, the kind of source that decided it and
+a reference to that source; `calibration` scores the resolved set.
+
+```js
+predict({ claim: "The p90 of the SQLite job is under 6 minutes",
+          prediction: "a 20-minute budget leaves headroom", test: "21 attempts of 2026-09-16",
+          confidence: 0.8 })
+// → { prediction_id: 12, status: "open" }
+resolve_prediction({ prediction_id: 12, verdict: "confirmed",
+                     observed: "p90 348 s over 18 successes",
+                     source_kind: "ci", source_ref: "cdeust/Cortex actions, 2026-09-16" })
+// → { prediction_id: 12, verdict: "confirmed", resolved: true }
+calibration()
+// → { scored: 9, brier: 0.11, uninformative_brier: 0.25, confirmed: 7, refuted: 2,
+//     reliability: [{ band: [0.6, 0.8], resolved: 4, mean_confidence: 0.78,
+//                     observed_frequency: 0.75 }, ...] }
+```
+
+`brier` is the mean squared distance between confidence and outcome; 0.25 is what a constant
+0.5 forecast earns, so a score above it means the confidences carried less information than
+saying nothing. Cortex never fetches the evidence itself: the verdict, the observation and
+the source reference come from the caller, which is what lets the same contract hold in any
+repository and under any review convention.
+
 ### What fades
 
 Memories carry heat that decays unless replay reinforces them, and episodic traces can consolidate
@@ -247,18 +276,26 @@ banners, auto-recall, auto-capture, checkpoints and every memory tool work on bo
 
 The server is host-agnostic. Any host that can launch a stdio process gets the full tool
 surface on the default SQLite store. What is not portable are the nine lifecycle hooks, which
-are Claude Code plugin machinery; the server never imports or requires them at startup.
+are Claude Code plugin machinery; the server never imports or requires them at startup. The
+Codex plugin deliberately starts the server with `--profile lean`: the full tool surface is the
+largest fixed token cost a session pays before the user types anything (ADR-0693, issue #177),
+and the plugin keeps that cost to ten tools; the direct registration below gives Codex the full
+surface.
 
-| Capability | Claude Code plugin | Local stdio hosts (Gemini CLI, Codex CLI, ChatGPT desktop, Cursor, Windsurf, VS Code, Agents SDK) | ChatGPT web |
-|---|---|---|---|
-| All 57 memory tools (`remember`, `recall`, wiki, navigation, consolidation, triggers, rules) | ✅ | ✅ | ❌ no remote HTTPS endpoint is shipped |
-| SQLite default store / PostgreSQL opt-in | ✅ | ✅ | ❌ would need a remote deployment and a per-user storage and auth model |
-| Auto-capture of significant tool output | ✅ PostToolUse hook | ❌ store explicitly with `remember` | ❌ |
-| Session-start context injection | ✅ SessionStart hook | ❌ call `recall` yourself | ❌ |
-| Per-prompt auto-recall | ✅ | ❌ | ❌ |
-| Compaction checkpoints | ✅ | ❌ | ❌ |
-| Autonomous wiki cycle | ✅ | ❌ run `consolidate` / `curate_wiki` manually | ❌ |
-| Cognitive profiling (`query_methodology`) | ✅ | ⚠️ profiles are mined from Claude Code session logs under `~/.claude/`; without them the profile is empty | ❌ |
+| Capability | Claude Code plugin | Codex plugin (`hypermnesia-mcp-codex`) | Codex `codex mcp add`, Gemini CLI, Cursor, Windsurf, VS Code, Agents SDK | ChatGPT web |
+|---|---|---|---|---|
+| Tool surface | all 57 tools | the 10-tool `lean` profile: `remember`, `recall`, `unified_search`, `recall_hierarchical`, `consolidate`, `memory_stats`, `check_setup`, `wiki_read`, `wiki_list`, `query_methodology` | all 57 tools (`full` is the default profile) | ❌ no remote HTTPS endpoint is shipped |
+| SQLite default store / PostgreSQL opt-in | ✅ | ✅ | ✅ | ❌ would need a remote deployment and a per-user storage and auth model |
+| One store for Claude Code and Codex | ✅ writes the selection to `~/.claude/methodology/backend.json` | ✅ reads that selection at startup (#600, from the release after 4.22.0) | ✅ same rule for any direct startup sharing the configuration root | ❌ |
+| Predictions and calibration (`predict`, `resolve_prediction`, `calibration`) | ✅ | ❌ not in `lean`; use the direct registration | ✅ | ❌ |
+| Wiki writes, ADRs, triggers, rules, codebase ingestion | ✅ | ❌ not in `lean` | ✅ | ❌ |
+| Auto-capture of significant tool output | ✅ PostToolUse hook | ❌ store explicitly with `remember` | ❌ same | ❌ |
+| Session-start context injection | ✅ SessionStart hook | ❌ call `recall` yourself | ❌ same | ❌ |
+| Per-prompt auto-recall | ✅ | ❌ | ❌ | ❌ |
+| Compaction checkpoints | ✅ | ❌ | ❌ | ❌ |
+| Autonomous wiki cycle | ✅ | ❌ `consolidate` by hand; `curate_wiki` needs the full profile | ❌ run `consolidate` / `curate_wiki` manually | ❌ |
+| Cognitive profiling (`query_methodology`) | ✅ | ⚠️ profiles are mined from Claude Code session logs under `~/.claude/`; without them the profile is empty | ⚠️ same | ❌ |
+| Worktree directory | `.claude/worktrees/<name>/`, the location `docs/agent-guidance.md` names | `.Codex/worktrees/<name>/`, where Codex puts its own; ignored at the repository root since #601 | n/a | n/a |
 
 On Claude Code memory is ambient: hooks capture and inject automatically. On every other host
 memory is tool-driven: the agent stores and retrieves when instructed, and nothing happens
@@ -277,7 +314,11 @@ uvx --from "hypermnesia-mcp[sqlite]" hypermnesia-mcp
 gemini extensions install https://github.com/cdeust/Cortex
 ```
 
-**Codex and ChatGPT desktop** have a native plugin with a 10-tool lean surface. Pre-install
+**Codex and ChatGPT desktop** have a native plugin with a 10-tool lean surface. It reads the
+same saved backend selection as the Claude Code launcher (`~/.claude/methodology/backend.json`),
+so both hosts write to one store (from the release after 4.22.0; the plugin launches the
+published package); explicit `CORTEX_MEMORY_STORE_BACKEND`, `CORTEX_BACKEND` or a database URL
+still wins. Pre-install
 the package once so the plugin's first `uvx` handshake reuses the local uv cache instead of
 spending its startup budget downloading a Python environment:
 
