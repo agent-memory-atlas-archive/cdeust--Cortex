@@ -3479,6 +3479,10 @@
     "ADR-1077": {
       "mirror": "ADR-1077-the-advertised-tool-count-is-read-from-the-registries.md",
       "path": "adr/cortex/1077-the-advertised-tool-count-is-read-from-the-registries.md"
+    },
+    "ADR-1078": {
+      "mirror": "ADR-1078-resolve-saved-backend-before-direct-mcp-startup-imports.md",
+      "path": "adr/cortex/1078-resolve-saved-backend-before-direct-mcp-startup-imports.md"
     }
   },
   "project": "cortex",
