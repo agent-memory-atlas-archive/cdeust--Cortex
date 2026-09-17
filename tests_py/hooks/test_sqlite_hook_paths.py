@@ -39,11 +39,27 @@ def test_backend_gate_follows_env(module, monkeypatch):
 
 
 class TestPartitionBannerRows:
+    """Rows default is_global=True: this class drives tag/limit logic, not
+    the project-scoping predicate (covered by test_sqlite_hook_scope.py,
+    issue #604)."""
+
     def test_noise_tags_excluded(self):
         rows = [
-            {"id": 1, "content": "tool noise", "tags": ["auto-captured"], "heat": 0.9},
-            {"id": 2, "content": "replica", "tags": ["memory-replica"], "heat": 0.9},
-            {"id": 3, "content": "real", "tags": [], "heat": 0.8},
+            {
+                "id": 1,
+                "content": "tool noise",
+                "tags": ["auto-captured"],
+                "heat": 0.9,
+                "is_global": True,
+            },
+            {
+                "id": 2,
+                "content": "replica",
+                "tags": ["memory-replica"],
+                "heat": 0.9,
+                "is_global": True,
+            },
+            {"id": 3, "content": "real", "tags": [], "heat": 0.8, "is_global": True},
         ]
         anchors, hot = session_start._partition_banner_rows(rows)
         assert anchors == []
@@ -57,6 +73,7 @@ class TestPartitionBannerRows:
                 "tags": ["_anchor"],
                 "is_protected": True,
                 "heat": 1.0,
+                "is_global": True,
             },
             {
                 "id": 2,
@@ -64,6 +81,7 @@ class TestPartitionBannerRows:
                 "tags": ["decision"],
                 "is_protected": True,
                 "heat": 0.9,
+                "is_global": True,
             },
             {
                 "id": 3,
@@ -71,6 +89,7 @@ class TestPartitionBannerRows:
                 "tags": ["_anchor:project"],
                 "is_protected": True,
                 "heat": 1.0,
+                "is_global": True,
             },
         ]
         anchors, hot = session_start._partition_banner_rows(rows)
@@ -79,7 +98,13 @@ class TestPartitionBannerRows:
 
     def test_limits_applied(self):
         rows = [
-            {"id": i, "content": f"m{i}", "tags": [], "heat": 0.9}
+            {
+                "id": i,
+                "content": f"m{i}",
+                "tags": [],
+                "heat": 0.9,
+                "is_global": True,
+            }
             for i in range(session_start._HOT_LIMIT + 10)
         ]
         _, hot = session_start._partition_banner_rows(rows)
@@ -97,15 +122,20 @@ def test_sqlite_context_prints_banner_and_receipt(store, tmp_path, monkeypatch, 
             "heat": 1.0,
             "is_protected": True,
             "tags": ["_anchor"],
+            "directory_context": "/repo",
         }
     )
-    store.insert_memory({"content": "hot working memory", "heat": 0.9})
+    store.insert_memory(
+        {"content": "hot working memory", "heat": 0.9, "directory_context": "/repo"}
+    )
     monkeypatch.setattr(
         "mcp_server.infrastructure.memory_store.get_shared_store", lambda: store
     )
     monkeypatch.setattr(session_start, "_print_external_sources", lambda: None)
 
-    session_start._sqlite_context({"transcript_path": "/tmp/session-abc.jsonl"})
+    session_start._sqlite_context(
+        {"transcript_path": "/tmp/session-abc.jsonl", "cwd": "/repo"}
+    )
 
     out = capsys.readouterr().out
     assert "Cortex Memory Context" in out
@@ -136,14 +166,35 @@ def test_sqlite_context_empty_store_prints_cold_start(store, monkeypatch, capsys
 
 
 class TestRecallMemoriesSqlite:
+    """directory_context="/repo" and project_root="/repo" on every seeded
+    row: this class drives FTS/heat/benchmark filtering, not the
+    project-scoping predicate (covered by test_sqlite_hook_scope.py,
+    issue #604)."""
+
     def test_fts_match_with_heat_floor(self, store):
         store.insert_memory(
-            {"content": "the resolver fix used topological sort", "heat": 0.8}
+            {
+                "content": "the resolver fix used topological sort",
+                "heat": 0.8,
+                "directory_context": "/repo",
+            }
         )
-        store.insert_memory({"content": "cold resolver note", "heat": 0.01})
-        store.insert_memory({"content": "unrelated grocery list", "heat": 0.9})
+        store.insert_memory(
+            {
+                "content": "cold resolver note",
+                "heat": 0.01,
+                "directory_context": "/repo",
+            }
+        )
+        store.insert_memory(
+            {
+                "content": "unrelated grocery list",
+                "heat": 0.9,
+                "directory_context": "/repo",
+            }
+        )
 
-        results = auto_recall._recall_memories_sqlite(store, "resolver fix")
+        results = auto_recall._recall_memories_sqlite(store, "resolver fix", "/repo")
 
         contents = [m["content"] for m in results]
         assert any("topological sort" in c for c in contents)
@@ -152,33 +203,53 @@ class TestRecallMemoriesSqlite:
 
     def test_protected_first_and_benchmarks_excluded(self, store):
         store.insert_memory(
-            {"content": "resolver benchmark row", "heat": 0.9, "is_benchmark": True}
+            {
+                "content": "resolver benchmark row",
+                "heat": 0.9,
+                "is_benchmark": True,
+                "directory_context": "/repo",
+            }
         )
-        store.insert_memory({"content": "resolver ordinary note", "heat": 0.9})
+        store.insert_memory(
+            {
+                "content": "resolver ordinary note",
+                "heat": 0.9,
+                "directory_context": "/repo",
+            }
+        )
         store.insert_memory(
             {
                 "content": "resolver protected decision",
                 "heat": 0.5,
                 "is_protected": True,
+                "directory_context": "/repo",
             }
         )
 
-        results = auto_recall._recall_memories_sqlite(store, "resolver")
+        results = auto_recall._recall_memories_sqlite(store, "resolver", "/repo")
 
         assert results, "expected FTS hits"
         assert results[0]["protected"] is True
         assert all("benchmark row" not in m["content"] for m in results)
 
     def test_hostile_fts_input_degrades_to_empty(self, store):
-        store.insert_memory({"content": "resolver note", "heat": 0.9})
+        store.insert_memory(
+            {"content": "resolver note", "heat": 0.9, "directory_context": "/repo"}
+        )
         # FTS5 syntax characters must not raise (search_fts catches them).
-        assert auto_recall._recall_memories_sqlite(store, 'a AND (b OR "') == []
+        assert (
+            auto_recall._recall_memories_sqlite(store, 'a AND (b OR "', "/repo") == []
+        )
 
 
 def test_process_event_sqlite_injects_and_exits_zero(store, monkeypatch, capsys):
     monkeypatch.setenv("CORTEX_MEMORY_STORE_BACKEND", "sqlite")
     store.insert_memory(
-        {"content": "the deploy script is resumable by design", "heat": 0.9}
+        {
+            "content": "the deploy script is resumable by design",
+            "heat": 0.9,
+            "directory_context": "/repo",
+        }
     )
     monkeypatch.setattr(
         "mcp_server.infrastructure.memory_store.get_shared_store", lambda: store
@@ -186,7 +257,7 @@ def test_process_event_sqlite_injects_and_exits_zero(store, monkeypatch, capsys)
 
     with pytest.raises(SystemExit) as exc:
         auto_recall._process_event_sqlite(
-            {"transcript_path": "/tmp/session-xyz.jsonl"},
+            {"transcript_path": "/tmp/session-xyz.jsonl", "cwd": "/repo"},
             "why is the deploy script resumable",
         )
 

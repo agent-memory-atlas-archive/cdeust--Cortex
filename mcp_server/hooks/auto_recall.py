@@ -50,6 +50,7 @@ from mcp_server.handlers.injection_receipts import (
 )
 from mcp_server.hooks._telemetry import observe_hook
 from mcp_server.shared.freshness import provenance_suffix
+from mcp_server.shared.project_scope import project_ancestors, resolve_project_root
 
 _LOG_PREFIX = "[cortex-auto-recall]"
 _DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/cortex")
@@ -119,7 +120,7 @@ def _connect():
         return None
 
 
-def _recall_memories(conn, query: str) -> list[dict]:
+def _recall_memories(conn, query: str, project_root: str | None = None) -> list[dict]:
     """Fast FTS-based recall against PG. No embedding model needed.
 
     Uses plainto_tsquery for natural language matching against the
@@ -127,9 +128,13 @@ def _recall_memories(conn, query: str) -> list[dict]:
     important memories.
 
     Each result keeps the memory ``id`` — the injection receipt (T2)
-    records exactly which memories entered the context.
+    records exactly which memories entered the context. The project
+    predicate runs inside the query, before ORDER BY/LIMIT: pushed to the
+    output it would let foreign-project rows outrank and starve the
+    project's own rows out of the LIMIT window (issue #604 follow-up).
     """
     results = []
+    ancestors = project_ancestors(project_root)
 
     # source: ADR-0485
     try:
@@ -149,11 +154,12 @@ def _recall_memories(conn, query: str) -> list[dict]:
               AND effective_heat(m, NOW()) >= %s
               AND NOT m.is_benchmark
               AND m.superseded_by_id IS NULL
+              AND (m.is_global = TRUE OR m.directory_context = ANY(%s::TEXT[]))
             ORDER BY m.is_protected DESC, rank DESC, effective_heat(m, NOW()) DESC
             LIMIT %s
             """
             ),
-            (query[:200], _MIN_HEAT, _MAX_MEMORIES + 2),
+            (query[:200], _MIN_HEAT, ancestors, _MAX_MEMORIES + 2),
         ).fetchall()
 
         for r in rows:
@@ -204,39 +210,51 @@ def _fts_query_from_prompt(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
-def _recall_memories_sqlite(store, query: str) -> list[dict]:
+def _sqlite_result_entry(memory_id: int, m: dict, heat: float) -> dict:
+    """One ``_recall_memories_sqlite`` result row, in the PG-path shape."""
+    return {
+        "id": memory_id,
+        "content": m.get("content", ""),
+        "heat": heat,
+        "domain": m.get("domain", "") or "",
+        "agent": m.get("agent_context", "") or "",
+        "protected": bool(m.get("is_protected")),
+        "created_at": m.get("created_at"),
+        "source_attribution": m.get("source_attribution", ""),
+        "is_stale": bool(m.get("is_stale")),
+    }
+
+
+def _recall_memories_sqlite(
+    store, query: str, project_root: str | None = None
+) -> list[dict]:
     """FTS-based recall through the SQLite store — no embedding load.
 
     Mirror of the PG ``_recall_memories`` contract: FTS prefilter +
-    heat floor, protected-first ordering, benchmark rows excluded.
-    ``search_fts`` already restricts to supersession chain heads and
-    non-stale rows (current_memories join) and returns [] on any FTS5
-    error.
+    heat floor, protected-first ordering, benchmark rows excluded. The
+    project predicate runs inside ``search_fts`` itself, before its own
+    LIMIT (issue #604 follow-up) -- a post-fetch filter here would let
+    foreign-project rows starve the project's own rows out of the
+    already-truncated pool. ``search_fts`` already restricts to
+    supersession chain heads and non-stale rows (current_memories join)
+    and returns [] on any FTS5 error.
     """
     fts_query = _fts_query_from_prompt(query[:200])
     if not fts_query:
         return []
+    ancestors = project_ancestors(project_root)
+    hits = store.search_fts(
+        fts_query, limit=_MAX_MEMORIES + 2, directory_ancestors=ancestors
+    )
     results = []
-    for memory_id, _score in store.search_fts(fts_query, limit=_MAX_MEMORIES + 2):
+    for memory_id, _score in hits:
         m = store.get_memory(memory_id)
         if not m or m.get("is_benchmark"):
             continue
         heat = float(m.get("heat") or 0.0)
         if heat < _MIN_HEAT:
             continue
-        results.append(
-            {
-                "id": memory_id,
-                "content": m.get("content", ""),
-                "heat": heat,
-                "domain": m.get("domain", "") or "",
-                "agent": m.get("agent_context", "") or "",
-                "protected": bool(m.get("is_protected")),
-                "created_at": m.get("created_at"),
-                "source_attribution": m.get("source_attribution", ""),
-                "is_stale": bool(m.get("is_stale")),
-            }
-        )
+        results.append(_sqlite_result_entry(memory_id, m, heat))
     # source: ADR-0485
     results.sort(key=lambda m: not m["protected"])
     return results[:_MAX_MEMORIES]
@@ -244,11 +262,17 @@ def _recall_memories_sqlite(store, query: str) -> list[dict]:
 
 def _process_event_sqlite(event: dict[str, Any], query: str) -> None:
     """Inject relevant memories from the SQLite store; exit 0 always."""
+    project_root = resolve_project_root(event, os.environ)
+    if project_root is None:
+        _log(
+            "project root unresolved (no CLAUDE_PROJECT_ROOT, no event cwd), "
+            "restricting to global memories"
+        )
     try:
         from mcp_server.infrastructure.memory_store import get_shared_store  # noqa: PLC0415 — hook latency boundary: the per-event hook process defers the handler/store stack (hook boot ~0.05 s vs ~0.6 s registry import, measured 2026-07-28)
 
         store = get_shared_store()
-        memories = _recall_memories_sqlite(store, query)
+        memories = _recall_memories_sqlite(store, query, project_root)
     except Exception as exc:  # noqa: BLE001 — hook boundary — failure is logged to the hook log; the hook stays non-fatal
         _log(f"sqlite recall failed (non-fatal): {exc}")
         sys.exit(0)
@@ -358,8 +382,15 @@ def process_event(event: dict[str, Any]) -> None:
     if conn is None:
         sys.exit(0)
 
+    project_root = resolve_project_root(event, os.environ)
+    if project_root is None:
+        _log(
+            "project root unresolved (no CLAUDE_PROJECT_ROOT, no event cwd), "
+            "restricting to global memories"
+        )
+
     try:
-        memories = _recall_memories(conn, query)
+        memories = _recall_memories(conn, query, project_root)
         if not memories:
             sys.exit(0)
 
