@@ -25,6 +25,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 import launcher_deps  # noqa: E402
+import launcher_site  # noqa: E402
 
 _MIN_ARGC = 2  # source: ADR-0742
 
@@ -97,10 +98,17 @@ def main() -> None:
         new_paths.append(current_pypath)
     os.environ["PYTHONPATH"] = path_sep.join(new_paths)
 
-    # Ensure PYTHONPATH entries are in sys.path for this process
-    for p in [plugin_root, deps_dir]:
-        if p not in sys.path:
-            sys.path.insert(0, p)
+    # Ensure PYTHONPATH entries are in sys.path for this process.
+    if plugin_root not in sys.path:
+        sys.path.insert(0, plugin_root)
+
+    # deps_dir joins sys.path here and nowhere else: being merely first on
+    # it is not isolation. That neither processes deps/pywin32.pth (the
+    # only route to pywintypes) nor stops an unvendored torchvision or
+    # torchaudio resolving from user site-packages against a torch deps/
+    # did not build.
+    # source: issue #621
+    launcher_site.isolate_deps(deps_dir)
 
     if (
         module == "mcp_server.hooks.post_tool_capture"
@@ -143,6 +151,16 @@ def main() -> None:
         launcher_deps.ensure_all_deps(deps_dir)
     else:
         launcher_deps.ensure_deps(deps_dir)
+
+    # Again, because the install above can add .pth files that the first
+    # call could not see. That pip run resolves transitives (only the
+    # installers' requirements closure passes --no-deps), so the set of
+    # distributions landing in deps_dir is wider than the pinned list, and
+    # a .pth among them would stay inert until the next launch -- issue
+    # #621's own bug class, for a different package. Re-running costs
+    # ~0.5 ms median on a 600-entry deps_dir (measured, 200 samples).
+    # source: issue #621
+    launcher_site.isolate_deps(deps_dir)
 
     # Change to plugin root
     os.chdir(plugin_root)
