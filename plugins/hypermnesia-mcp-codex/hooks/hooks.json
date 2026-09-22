@@ -1,0 +1,116 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook decision_gate'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook no_deps_gate'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook session_start'",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook auto_recall'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook post_tool_capture'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Read|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook preemptive_context'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook pipeline_impact_bump'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|exec_command|shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook post_commit_reindex'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook session_lifecycle'",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook compaction_checkpoint'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v uvx >/dev/null 2>&1 || { echo \"cortex hook: uvx is not on PATH; install uv so Codex can run Cortex lifecycle hooks\" >&2; exit 1; }; exec uvx --from \"hypermnesia-mcp[postgresql,sqlite]\" hypermnesia-mcp-hook agent_briefing'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

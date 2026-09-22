@@ -51,10 +51,12 @@ wiki root.
 
 ## Tool permissions
 
-The bundled Codex plugin keeps its ten-tool `lean` profile (ADR-0693).
-It can recall a project ADR but cannot create one. An explicitly configured
-`--profile full` MCP process can author decisions. This exposes the full tool
-surface; it is not a narrowly scoped decision-writing profile.
+The bundled Codex plugin serves the default `full` profile, so it can author a
+project ADR as well as recall one, exactly like the Claude Code plugin. A
+process started with `--profile lean` (or `CORTEX_MCP_PROFILE=lean`) can recall
+a project ADR but cannot create one, because `lean` hides and rejects the wiki
+writers (ADR-0693). Neither profile is a narrowly scoped decision-writing
+surface: `full` exposes every tool, and `lean` exposes the recall subset.
 
 A minimal evaluation is:
 
@@ -65,8 +67,11 @@ A minimal evaluation is:
 4. Both clients retrieve the follow-up and its reference.
 
 The follow-up reference is explicit text. These tests do not establish
-automatic outcome attribution, automatic conflict resolution, or equivalent
-Claude and Codex lifecycle hooks.
+automatic outcome attribution or automatic conflict resolution. Both hosts do
+now register the same 11 hook modules. The plugin contract tests assert
+registration parity, not equivalent native behavior. See
+[Codex hook limitations](codex-plugin.md) for payload and timeout differences;
+the handoff tests here do not exercise those hooks.
 
 ## Reproducible checks
 

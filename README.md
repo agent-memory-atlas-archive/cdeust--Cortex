@@ -40,7 +40,7 @@ files. We hold that intent to the
 publish **no CO₂ or energy figure**, because we have not measured one.
 [What we do and do not claim ↓](#green-software-engineering)
 
-> **36 neuroscience mechanisms · 57 memory tools · 9 lifecycle hooks · a self-curating per-project wiki — all local, all open-source, MIT.**
+> **36 neuroscience mechanisms · 57 memory tools · 11 lifecycle hooks · a self-curating per-project wiki — all local, all open-source, MIT.**
 
 ## Install
 
@@ -204,8 +204,8 @@ prior analysis, the Redis decision, and the TTL lesson when their content matche
 **Three weeks later.** The sessions can consolidate into a pattern about authentication and
 TTL-based caches; some details may fade while the principle remains useful.
 
-In Claude Code that is automatic: nine lifecycle hooks inject context at session start, recall
-per prompt, capture as you work, checkpoint before compaction, and run a per-project wiki that
+In Claude Code and Codex alike that is automatic: 11 lifecycle hooks inject context at session
+start, recall per prompt, capture as you work, checkpoint before compaction, and run a wiki that
 curates itself. In any other stdio MCP host you call the same 57 tools yourself, or 60 when
 the optional `ai-architect-mcp-codebase` and `ai-architect-mcp-spec` integrations are present.
 
@@ -275,31 +275,31 @@ banners, auto-recall, auto-capture, checkpoints and every memory tool work on bo
 ## Every other MCP host
 
 The server is host-agnostic. Any host that can launch a stdio process gets the full tool
-surface on the default SQLite store. What is not portable are the nine lifecycle hooks, which
-are Claude Code plugin machinery; the server never imports or requires them at startup. The
-Codex plugin deliberately starts the server with `--profile lean`: the full tool surface is the
-largest fixed token cost a session pays before the user types anything (ADR-0693, issue #177),
-and the plugin keeps that cost to ten tools; the direct registration below gives Codex the full
-surface.
+surface on the default SQLite store. What is not portable are the lifecycle hooks — but they
+are no longer Claude-only: the Codex plugin registers the same 11 hook modules through the
+`hypermnesia-mcp-hook` console script. Host payloads and timeout limits affect their behavior:
+native Codex subagent starts receive no briefing, and session-end recording can exceed its
+timeout. See [Codex hook limitations](docs/codex-plugin.md). A direct `codex mcp add`
+registration gets the tool surface only; the hooks come with the plugin.
 
 | Capability | Claude Code plugin | Codex plugin (`hypermnesia-mcp-codex`) | Codex `codex mcp add`, Gemini CLI, Cursor, Windsurf, VS Code, Agents SDK | ChatGPT web |
 |---|---|---|---|---|
-| Tool surface | all 57 tools | the 10-tool `lean` profile: `remember`, `recall`, `unified_search`, `recall_hierarchical`, `consolidate`, `memory_stats`, `check_setup`, `wiki_read`, `wiki_list`, `query_methodology` | all 57 tools (`full` is the default profile) | ❌ no remote HTTPS endpoint is shipped |
+| Tool surface | all 57 tools | all 57 tools (no `--profile` flag, same as Claude Code) | all 57 tools (`full` is the default profile) | ❌ no remote HTTPS endpoint is shipped |
 | SQLite default store / PostgreSQL opt-in | ✅ | ✅ | ✅ | ❌ would need a remote deployment and a per-user storage and auth model |
 | One store for Claude Code and Codex | ✅ writes the selection to `~/.claude/methodology/backend.json` | ✅ reads that selection at startup (#600, since 4.23.0) | ✅ same rule for any direct startup sharing the configuration root | ❌ |
-| Predictions and calibration (`predict`, `resolve_prediction`, `calibration`) | ✅ | ❌ not in `lean`; use the direct registration | ✅ | ❌ |
-| Wiki writes, ADRs, triggers, rules, codebase ingestion | ✅ | ❌ not in `lean` | ✅ | ❌ |
-| Auto-capture of significant tool output | ✅ PostToolUse hook | ❌ store explicitly with `remember` | ❌ same | ❌ |
-| Session-start context injection | ✅ SessionStart hook | ❌ call `recall` yourself | ❌ same | ❌ |
-| Per-prompt auto-recall | ✅ | ❌ | ❌ | ❌ |
-| Compaction checkpoints | ✅ | ❌ | ❌ | ❌ |
-| Autonomous wiki cycle | ✅ | ❌ `consolidate` by hand; `curate_wiki` needs the full profile | ❌ run `consolidate` / `curate_wiki` manually | ❌ |
+| Predictions and calibration (`predict`, `resolve_prediction`, `calibration`) | ✅ | ✅ | ✅ | ❌ |
+| Wiki writes, ADRs, triggers, rules, codebase ingestion | ✅ | ✅ | ✅ | ❌ |
+| Auto-capture of significant tool output | ✅ PostToolUse hook | ✅ PostToolUse hook | ❌ store explicitly with `remember` | ❌ |
+| Session-start context injection | ✅ SessionStart hook | ✅ SessionStart hook | ❌ call `recall` yourself | ❌ |
+| Per-prompt auto-recall | ✅ | ✅ UserPromptSubmit hook | ❌ | ❌ |
+| Compaction checkpoints | ✅ `Notification: compacted` | ✅ `PreCompact` (Codex has no `Notification` event) | ❌ | ❌ |
+| Autonomous wiki cycle | ✅ | ✅ | ❌ run `consolidate` / `curate_wiki` manually | ❌ |
 | Cognitive profiling (`query_methodology`) | ✅ | ⚠️ profiles are mined from Claude Code session logs under `~/.claude/`; without them the profile is empty | ⚠️ same | ❌ |
 | Worktree directory | `.claude/worktrees/<name>/`, the location `docs/agent-guidance.md` names | `.Codex/worktrees/<name>/`, where Codex puts its own; ignored at the repository root since #601 | n/a | n/a |
 
-On Claude Code memory is ambient: hooks capture and inject automatically. On every other host
-memory is tool-driven: the agent stores and retrieves when instructed, and nothing happens
-between prompts.
+The Claude Code and Codex plugins use hooks to capture and inject memory automatically,
+subject to the host limitations above. With a direct MCP registration without plugin hooks,
+memory is tool-driven: the agent explicitly calls tools to store and retrieve it.
 
 The launch command on every host is the PyPI package. The `[sqlite]` extra enables
 sqlite-vec vector search; without it the store still works, with vector search disabled.
@@ -314,7 +314,8 @@ uvx --from "hypermnesia-mcp[sqlite]" hypermnesia-mcp
 gemini extensions install https://github.com/cdeust/Cortex
 ```
 
-**Codex and ChatGPT desktop** have a native plugin with a 10-tool lean surface. It reads the
+**Codex and ChatGPT desktop** have a native plugin with the full tool surface and the same
+11 lifecycle hooks the Claude Code plugin installs. It reads the
 same saved backend selection as the Claude Code launcher (`~/.claude/methodology/backend.json`),
 so both hosts write to one store (since 4.23.0); explicit `CORTEX_MEMORY_STORE_BACKEND`, `CORTEX_BACKEND` or a database URL
 still wins. Pre-install

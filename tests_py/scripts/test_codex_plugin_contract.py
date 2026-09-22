@@ -1,25 +1,30 @@
-"""Contract tests for the additive, isolated Codex plugin package."""
+"""Contract tests for the isolated, full-parity Codex plugin package.
+
+The hook manifest this package now ships has its own contracts in the sibling
+test_codex_plugin_hooks_contract.py; this file carries the package identity,
+the marketplace entries and the MCP server command.
+"""
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 
+from tests_py.scripts._codex_plugin_support import (
+    CLAUDE_PLUGIN_PATH,
+    HOOKS_PATH,
+    HOOKS_REF,
+    MCP_PATH,
+    PLUGIN_PATH,
+    PLUGIN_ROOT,
+    REPO_ROOT,
+    read_json as _json,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKETPLACE_PATH = REPO_ROOT / ".agents/plugins/marketplace.json"
-PLUGIN_ROOT = REPO_ROOT / "plugins/hypermnesia-mcp-codex"
-PLUGIN_PATH = PLUGIN_ROOT / ".codex-plugin/plugin.json"
-MCP_PATH = PLUGIN_ROOT / ".mcp.json"
 CLAUDE_MARKETPLACE_PATH = REPO_ROOT / ".claude-plugin/marketplace.json"
 VIZ_SHIM_ROOT = REPO_ROOT / "plugins/cortex-viz-deprecated"
 VIZ_SHIM_PLUGIN_PATH = VIZ_SHIM_ROOT / ".claude-plugin/plugin.json"
 VIZ_SHIM_HOOKS_PATH = VIZ_SHIM_ROOT / "hooks/hooks.json"
-
-
-def _json(path: Path) -> dict:
-    return json.loads(path.read_text())
 
 
 def test_codex_plugin_is_confined_to_a_dedicated_subdirectory() -> None:
@@ -34,6 +39,33 @@ def test_codex_plugin_is_confined_to_a_dedicated_subdirectory() -> None:
     assert "plugins/hypermnesia-mcp-codex/" in ignored
     assert "plugins/cortex-deprecated/" in ignored
     assert "plugins/cortex-viz-deprecated/" in ignored
+
+    # Every file this package ships is actually covered by one of those
+    # directory entries. Asserting `HOOKS_PATH.is_relative_to(PLUGIN_ROOT)`
+    # instead could never fail: the support module defines HOOKS_PATH AS
+    # `PLUGIN_ROOT / "hooks/hooks.json"`, so it tested the constant, not the
+    # ignore file.
+    prefixes = tuple(entry for entry in ignored if entry.endswith("/"))
+    shipped = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in PLUGIN_ROOT.rglob("*")
+        if path.is_file()
+    ]
+    assert HOOKS_PATH.relative_to(REPO_ROOT).as_posix() in shipped
+    uncovered = [rel for rel in shipped if not rel.startswith(prefixes)]
+    assert not uncovered, (
+        f"shipped by the Codex package but not excluded from the Claude "
+        f"MCPB bundle: {uncovered}"
+    )
+    # A re-include would silently undo the directory entry above, and a
+    # prefix test alone cannot see it.
+    reincluded = [
+        entry
+        for entry in ignored
+        if entry.startswith("!")
+        if any(rel.startswith(entry[1:].rstrip("/")) for rel in shipped)
+    ]
+    assert not reincluded, f"re-includes a Codex package path: {reincluded}"
 
 
 def test_codex_marketplace_resolves_only_the_dedicated_plugin() -> None:
@@ -59,14 +91,15 @@ def test_codex_marketplace_resolves_only_the_dedicated_plugin() -> None:
     assert source.is_relative_to(REPO_ROOT.resolve())
 
 
-def test_codex_plugin_is_mcp_only_and_uses_the_exact_lean_profile() -> None:
+def test_codex_plugin_serves_the_full_profile_and_references_its_hooks() -> None:
     plugin = _json(PLUGIN_PATH)
     server = _json(MCP_PATH)["mcpServers"]["cortex"]
 
     assert plugin["name"] == "hypermnesia-mcp-codex"
+    # Both host surfaces are path references, never inlined objects.
     assert plugin["mcpServers"] == "./.mcp.json"
-    for unsupported in ("hooks", "skills", "apps", "agents", "postInstall"):
-        assert unsupported not in plugin
+    assert plugin["hooks"] == HOOKS_REF
+    assert (PLUGIN_ROOT / HOOKS_REF).resolve() == HOOKS_PATH.resolve()
 
     assert server == {
         "command": "uvx",
@@ -74,22 +107,44 @@ def test_codex_plugin_is_mcp_only_and_uses_the_exact_lean_profile() -> None:
             "--from",
             "hypermnesia-mcp[postgresql,sqlite]",
             "hypermnesia-mcp",
-            "--profile",
-            "lean",
         ],
-        # Codex is additive, but its local storage selection has the same
-        # auto contract as the DB-optional sandbox surface: try PostgreSQL
-        # first and fall back only when no explicit DATABASE_URL was supplied.
+        # Codex's local storage selection has the same auto contract as the
+        # DB-optional sandbox surface: try PostgreSQL first and fall back only
+        # when no explicit DATABASE_URL was supplied.
         "env": {"CORTEX_RUNTIME": "cowork"},
-        # Measured clean-cache startup with both extras on 2026-08-03: 103.84s
-        # on macOS 26.5.1 arm64 with uv 0.8.19. This bounded ceiling leaves
-        # startup headroom without inventing a sleep or retry.
+        # Re-measured for the full profile on 2026-09-22 with
+        # scripts/verify_mcp_hosts.py (the command CI runs): initialize +
+        # tools/list + memory_stats over 59 tools in 120.17s from clean
+        # UV_CACHE_DIR / UV_TOOL_DIR on macOS 26.6.2 arm64 with uv 0.11.3;
+        # 4.24s on the next run from that cache. This bounded ceiling leaves
+        # startup headroom without a sleep or a retry.
         "startup_timeout_sec": 180,
     }
+    # No --profile flag at all, exactly like the Claude plugin's server args:
+    # the default full profile is what both hosts get.
+    assert "--profile" not in server["args"]
 
 
-def test_codex_package_does_not_weaken_the_primary_claude_plugin() -> None:
-    claude = _json(REPO_ROOT / ".claude-plugin/plugin.json")
+def test_codex_plugin_ships_an_mcp_server_and_hooks_and_nothing_else() -> None:
+    """The package's own SECURITY.md tells a reviewer it ships "no skills,
+    apps or agents" and runs no installer. That is a testable claim, and the
+    denylist asserting it was lost when this file was split; `hooks` moved
+    from the denied set to the required one, the rest did not."""
+    plugin = _json(PLUGIN_PATH)
+
+    assert set(plugin) >= {"mcpServers", "hooks"}
+    for unsupported in ("skills", "apps", "agents", "postInstall"):
+        assert unsupported not in plugin, unsupported
+    # postInstall is the sharpest of those: the Claude package runs an
+    # installer script, and this one deliberately does not.
+    assert not (PLUGIN_ROOT / "scripts").exists()
+
+
+def test_codex_package_does_not_weaken_the_claude_plugin() -> None:
+    """Parity was reached by raising Codex, never by lowering Claude Code:
+    the Claude manifest still launches through its own launcher, keeps its
+    agents, and carries no --profile flag."""
+    claude = _json(CLAUDE_PLUGIN_PATH)
     claude_server = claude["mcpServers"]["cortex"]
 
     assert claude["name"] == "hypermnesia-mcp"
@@ -101,6 +156,8 @@ def test_codex_package_does_not_weaken_the_primary_claude_plugin() -> None:
         "mcp_server",
     ]
     assert "--profile" not in claude_server["args"]
+    # That the Codex package ships no launcher of its own is asserted once,
+    # in test_codex_plugin_ships_an_mcp_server_and_hooks_and_nothing_else.
 
 
 def test_claude_marketplace_publishes_pinned_canonical_viz_identity() -> None:

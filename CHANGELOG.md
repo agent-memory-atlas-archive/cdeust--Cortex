@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Codex exposes the full tool profile and registers all eleven hook modules.**
+  Host payloads and timeout limits still affect behavior; see
+  [Codex hook limitations](docs/codex-plugin.md). The Codex
+  plugin now serves the complete tool profile (`.mcp.json` drops
+  `--profile lean`, matching the Claude manifest's server args, which carry
+  no `--profile` flag) and installs the same eleven lifecycle hooks through
+  a new `plugins/hypermnesia-mcp-codex/hooks/hooks.json`, referenced from
+  `.codex-plugin/plugin.json` by path the way `mcpServers` already is. Each
+  hook runs `uvx --from "hypermnesia-mcp[postgresql,sqlite]"
+  hypermnesia-mcp-hook <module>` — the console script added in #605 — so the
+  package still ships only its own directory, never this repository and never
+  `scripts/launcher.py`. Event names are Codex's own: `compaction_checkpoint`
+  moves to `PreCompact` because Codex has no `Notification` event, and
+  `SessionEnd` takes Codex's documented 3-second maximum instead of the
+  Claude manifest's 30. Every other hook carries the Claude manifest's own
+  timeout, because a latency budget is part of behaviour: unset, Codex would
+  let a stalled `UserPromptSubmit` hook hold a prompt for its 600-second
+  default where Claude Code caps the same hook at 5 seconds. The two
+  `PreToolUse` gates declare none on either host, which is the parity case.
+  Matchers carry Codex's native tool names
+  (`apply_patch`, `exec_command`, `shell_command`) alongside Claude's, so the
+  translations in `host_event.py` (#608) actually receive the events they
+  translate. This reverses the earlier "Codex is additive, reduced" design.
+
 ## [4.23.1] - 2026-09-22
 
 ### Fixed
