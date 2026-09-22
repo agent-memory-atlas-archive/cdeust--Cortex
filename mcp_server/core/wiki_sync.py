@@ -13,6 +13,8 @@ from mcp_server.core.wiki_identity import generate_page_id
 from mcp_server.shared.wiki_layout import slugify
 from mcp_server.shared.wiki_pages import build_note
 from mcp_server.shared.wiki_classification import classification_to_frontmatter
+from mcp_server.shared.wiki_page_candidate import PageCandidate
+from mcp_server.shared.wiki_pointer import is_pointer_source
 import hashlib
 
 _DECISION_TAGS = frozenset({"decision", "adr", "architecture", "spec", "design"})
@@ -67,16 +69,36 @@ _MODERN_KIND_TO_DIR = {
 }
 
 
-def build_from_memory(
-    *,
-    memory_id: int | str,
-    content: str,
-    tags: list[str] | None,
-    domain: str = "",
-) -> tuple[str, str] | None:
-    """Build (relative_path, markdown) for a memory, or None if rejected.
+def _page_frontmatter(
+    classification, title: str, memory_id: int | str
+) -> dict[str, object]:
+    """The 4-tuple axes plus page identity, ready to serialise.
 
     source: ADR-0314"""
+    fm = classification_to_frontmatter(classification)
+    fm["id"] = generate_page_id()
+    fm["title"] = title
+    fm["updated"] = _now_iso()
+    if "memory_id" not in fm:
+        fm["memory_id"] = memory_id
+    return fm
+
+
+def build_from_memory(candidate: PageCandidate) -> tuple[str, str] | None:
+    """Build (relative_path, markdown) for a memory, or None if rejected.
+
+    This is the first pass that admits a memory into wiki
+    materialisation, so it is where a memory that is itself a pointer at
+    an already-authored page is turned away: materialising one rebuilds
+    a corrupted copy of the page it points at (issue #622).
+    ``PageCandidate.memory_source`` has no default, so a new call site
+    cannot reopen that loop by omitting it.
+
+    source: ADR-0314"""
+    if is_pointer_source(candidate.memory_source):
+        return None
+
+    content, tags = candidate.content, candidate.tags
     classification = classify_memory(content, tags)
     if classification is None:
         return None
@@ -85,24 +107,14 @@ def build_from_memory(
     if not title:
         title = f"memory-{hashlib.sha256(content.encode()).hexdigest()[:8]}"
 
-    slug = slugify(title)
-    filename = f"{memory_id}-{slug}.md"
-
     dir_name = _MODERN_KIND_TO_DIR.get(classification.kind, "explanation")
+    domain = candidate.domain
     safe_domain = slugify(domain, max_len=40) if domain else "_general"
-    rel = f"{dir_name}/{safe_domain}/{filename}"
+    rel = f"{dir_name}/{safe_domain}/{candidate.memory_id}-{slugify(title)}.md"
 
     # source: ADR-0314
-
-    fm = classification_to_frontmatter(classification)
-    fm["id"] = generate_page_id()
-    fm["title"] = title
-    fm["updated"] = _now_iso()
-    if "memory_id" not in fm:
-        fm["memory_id"] = memory_id
-
-    markdown = _render_with_frontmatter(fm, title, content)
-    return rel, markdown
+    fm = _page_frontmatter(classification, title, candidate.memory_id)
+    return rel, _render_with_frontmatter(fm, title, content)
 
 
 def _render_with_frontmatter(

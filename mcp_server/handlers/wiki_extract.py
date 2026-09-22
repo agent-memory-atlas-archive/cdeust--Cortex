@@ -22,6 +22,7 @@ from mcp_server.infrastructure.pg_store_wiki import (
     delete_claims_for_memory,
     insert_claim_events,
 )
+from mcp_server.shared.wiki_pointer import is_pointer_source, not_a_pointer_sql
 
 
 schema = {
@@ -82,37 +83,61 @@ def _get_store() -> MemoryStore:
     return get_shared_store(settings.DB_PATH, settings.EMBEDDING_DIM)
 
 
-def _memory_rows(conn, memory_id: int | None, limit: int, force: bool) -> list[dict]:
-    """Fetch the candidate memory rows for extraction."""
+# A wiki-page pointer memory is a copy of a page that already exists;
+# claims mined from one feed wiki_synthesize/wiki_compile and rebuild
+# that page as a corrupted derivative (issue #622). The exclusion sits
+# on every branch — an explicit memory_id included — because this is the
+# pass that first admits a memory into the drafting chain.
+_SELECT_CANDIDATE = "SELECT m.id, m.content, m.tags, m.source FROM memories m WHERE "
+
+_NO_CLAIMS_YET = (
+    "NOT EXISTS (SELECT 1 FROM wiki.claim_events c WHERE c.memory_id = m.id)"
+)
+
+
+def _candidate_query(
+    memory_id: int | None, limit: int, force: bool
+) -> tuple[str, tuple]:
+    """(sql, params) for the three selection modes, pointers pre-filtered.
+
+    The pointer clause here narrows the result set; it does not decide.
+    ``_memory_rows`` applies ``is_pointer_source`` to whatever comes
+    back, so a padded ``source`` value LIKE cannot see is still turned
+    away — the two enforcement points cannot disagree on an outcome
+    because only one of them is the authority.
+
+    source: ADR-0459"""
+    not_pointer, pointer_params = not_a_pointer_sql("m.source")
     if memory_id is not None:
-        sql = "SELECT id, content, tags FROM memories WHERE id = %s"
-        params: tuple = (memory_id,)
-    elif force:
-        sql = "SELECT id, content, tags FROM memories ORDER BY id LIMIT %s"
-        params = (limit,)
-    else:
-        # source: ADR-0459
-        sql = """
-        SELECT m.id, m.content, m.tags
-          FROM memories m
-         WHERE NOT EXISTS (
-            SELECT 1 FROM wiki.claim_events c WHERE c.memory_id = m.id
-         )
-         ORDER BY m.id
-         LIMIT %s
-        """
-        params = (limit,)
+        sql = f"{_SELECT_CANDIDATE} m.id = %s AND {not_pointer}"  # noqa: S608 — module-literal fragments built by not_a_pointer_sql, not input
+        return sql, (memory_id, *pointer_params)
+    predicate = not_pointer if force else f"{_NO_CLAIMS_YET} AND {not_pointer}"
+    sql = f"{_SELECT_CANDIDATE}{predicate} ORDER BY m.id LIMIT %s"  # noqa: S608 — module-literal fragments built by not_a_pointer_sql, not input
+    return sql, (*pointer_params, limit)
+
+
+def _row_fields(row) -> tuple:
+    """(id, content, tags, source) from a dict-shaped or tuple-shaped row."""
+    if isinstance(row, dict):
+        return row["id"], row["content"], row.get("tags") or [], row.get("source")
+    return row[0], row[1], row[2] or [], row[3]
+
+
+def _memory_rows(conn, memory_id: int | None, limit: int, force: bool) -> list[dict]:
+    """Fetch the candidate memory rows for extraction, pointers excluded.
+
+    ``is_pointer_source`` is the authority — see ``_candidate_query``.
+    """
+    sql, params = _candidate_query(memory_id, limit, force)
     with conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
     out: list[dict] = []
     for r in rows:
-        if isinstance(r, dict):
-            out.append(
-                {"id": r["id"], "content": r["content"], "tags": r.get("tags") or []}
-            )
-        else:
-            out.append({"id": r[0], "content": r[1], "tags": r[2] or []})
+        mid, content, tags, origin = _row_fields(r)
+        if is_pointer_source(origin):
+            continue
+        out.append({"id": mid, "content": content, "tags": tags})
     return out
 
 

@@ -82,6 +82,49 @@ adheres to [Semantic Versioning](https://semver.org/).
   text-mode stdout writes CRLF on Windows and a pipe preserves it, so the
   extracted name arrived as `sentence-transformers\r` and the rest of the
   installer's line overwrote it from column 0.
+- A `wiki_write` pointer memory is no longer re-materialised as a wiki page
+  (#622). `wiki_write`/`wiki_adr` register one memory per authored page so
+  the page surfaces in `recall`; that memory carries a prefix of the page's
+  own markdown. `remember` handed it to `wiki_sync.build_from_memory` like
+  any other memory, and a tag such as `architecture` admitted it, so the
+  classifier wrote a second page from the pointer: the authored
+  frontmatter copied into the body, a `title:` YAML line as the H1, a kind
+  inferred rather than read (`rfc/_general/` for a page declaring
+  `kind: explanation`), and the body cut mid-word. A new
+  `shared/wiki_pointer.py` owns the identity of a pointer memory, keyed on
+  the `wiki://` origin prefix; `build_from_memory` and `sync_memory_strict`
+  now take that origin inside a `PageCandidate`, and `wiki_extract`'s
+  candidate query excludes pointers on every branch. `is_pointer_source`
+  is the single authority: the SQL clause only narrows the candidate set,
+  so a `source` value padded with whitespace, which LIKE cannot see, is
+  still turned away rather than slipping past the second door. The
+  pointer memory itself is unchanged: removing it would drop the authored
+  page out of `recall`. Pointer truncation now lands on a word boundary.
+  Upgrading does not clean up after the old behaviour. A pointer memory
+  that already carries `wiki.claim_events` rows from before this fix is
+  still a synthesis candidate, because `wiki_synthesize` selects from
+  `claim_events` and never reads `memories`. Re-running `wiki_extract`
+  will not clear those rows: its pointer exclusion applies on every
+  branch, including `force` and an explicit `memory_id`, so the
+  `delete_claims_for_memory` call inside it is now unreachable for a
+  pointer. The only in-product path that still deletes them is `forget`,
+  which removes the memory itself and so drops the authored page out of
+  `recall` — the outcome #622 rules out. Clearing the rows while keeping
+  the pointer is therefore a manual, one-time statement against the
+  store:
+  `DELETE FROM wiki.claim_events WHERE memory_id IN (SELECT id FROM memories WHERE source LIKE 'wiki://%');`
+  On SQLite the table is `wiki_claim_events`; the rest is identical. Any
+  page already derived from such a memory is removed with `wiki_purge`,
+  which now reaches every page kind.
+- `wiki_purge` reaches every page kind (#622). Its page-kind directory
+  set was a hand-kept copy that had drifted from `shared.wiki_layout`, so
+  pages under `rfc/`, `explanation/`, `how-to/`, `runbook/`, `tutorial/`
+  and `files/` were skipped in silence and had to be deleted by hand. It
+  now derives from `PAGE_KINDS`, and the result reports
+  `wiki_pages_total`, `unscanned`, `errored` and `unrecognised_dirs`
+  alongside `scanned` so a caller can tell a full sweep from a partial
+  one. A page that failed to read counts as scanned, not unscanned: an
+  I/O fault no longer hides inside the coverage gap.
 
 ## [4.23.1] - 2026-09-22
 

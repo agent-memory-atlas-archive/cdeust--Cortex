@@ -13,38 +13,27 @@ from pathlib import Path
 from mcp_server.core.wiki_sync import build_from_memory
 from mcp_server.infrastructure import wiki_reindex_io, wiki_store
 from mcp_server.observability import silent_failure
+from mcp_server.shared.wiki_page_candidate import PageCandidate
 
 
-def sync_memory_strict(
-    root: Path | str,
-    *,
-    memory_id: int | str,
-    content: str,
-    tags: list[str] | None,
-    domain: str = "",
-) -> str | None:
+def sync_memory_strict(root: Path | str, candidate: PageCandidate) -> str | None:
     """Strict variant of ``sync_memory`` — surfaces errors to the caller.
 
-        Preconditions:
-            - ``content`` is a non-empty string.
-            - ``memory_id`` has already been committed to the store.
+        Preconditions: ``candidate.content`` is non-empty, its
+        ``memory_id`` is already committed to the store, and its
+        ``memory_source`` is that row's ``source`` column so
+        ``build_from_memory`` can turn away a wiki-page pointer
+        (issue #622).
 
-        Postconditions:
-            - On success: returns the relative path of the written wiki page.
-            - On classifier rejection: returns None (not an error — the memory
-              did not qualify for a wiki page).
-            - On I/O or classifier failure: raises the underlying exception.
-              The caller must decide whether the memory write + wiki failure
-              constitutes a partial failure.
-
-        Does NOT swallow the reindex failure either — reindex is best-effort
-        by design (see ``wiki_reindex_io.try_reindex``), but the page write
-        itself must succeed or be reported.
+        Postconditions: returns the relative path of the written page; or
+        None when the classifier rejects the memory or it is a pointer
+        (neither is an error). Any I/O or classifier failure raises, and
+        the caller decides whether a stored memory plus a failed wiki
+        write is a partial failure. The best-effort reindex
+        (``wiki_reindex_io.try_reindex``) is not swallowed here either.
 
     source: ADR-0462"""
-    built = build_from_memory(
-        memory_id=memory_id, content=content, tags=tags, domain=domain
-    )
+    built = build_from_memory(candidate)
     if built is None:
         return None
     rel_path, markdown = built
@@ -53,14 +42,7 @@ def sync_memory_strict(
     return rel_path
 
 
-def sync_memory(
-    root: Path | str,
-    *,
-    memory_id: int | str,
-    content: str,
-    tags: list[str] | None,
-    domain: str = "",
-) -> str | None:
+def sync_memory(root: Path | str, candidate: PageCandidate) -> str | None:
     """Promote a stored memory to a wiki page if it passes the classifier.
 
         Returns the relative path of the written page, or None when the
@@ -68,13 +50,7 @@ def sync_memory(
 
     source: ADR-0462"""
     try:
-        return sync_memory_strict(
-            root,
-            memory_id=memory_id,
-            content=content,
-            tags=tags,
-            domain=domain,
-        )
+        return sync_memory_strict(root, candidate)
     except Exception as exc:  # noqa: BLE001 — mechanism boundary; failure is observable via silent_failure
         silent_failure.note("wiki_memory_sync.sync_memory", exc)
         return None
