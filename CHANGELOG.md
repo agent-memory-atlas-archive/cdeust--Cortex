@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.23.3] - 2026-09-22
+
+### Fixed
+
+- Codex lifecycle hooks use the MCP storage factory when no backend is configured,
+  so automatic context reads the same SQLite store after PostgreSQL fallback.
+  Explicit database targets and saved backend selections retain precedence.
+  The MCP store also treats `CORTEX_MEMORY_DATABASE_URL` as an explicit target
+  and refuses an unrequested SQLite fallback when that target is unavailable.
+- Preserve the explicitly attached project directory when priming memories from
+  file reads through a symlink alias. Previously, a memory stored under a macOS
+  `/var/folders` path was missed because priming queried `/private/var/folders`.
+  Project scope and cooldown keys now preserve the same directory identity, so
+  a read through one alias cannot suppress another scope. Both storage backends
+  retain foreign-project isolation (#629).
+
 ## [4.23.2] - 2026-09-22
 
 ### Fixed
