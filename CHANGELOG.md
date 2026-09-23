@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The SQLite backend now installs sqlite-vec on every platform, and a
+  memory is never mislabelled as having a vector it doesn't have (#634).**
+  Neither the plugin launcher's runtime dependency pins nor `scripts/setup.py`'s
+  install closure (`requirements/setup.txt`) ever named the `[sqlite]` extra —
+  only `postgresql`, `codebase` and `benchmarks` were installed, unconditionally,
+  regardless of which backend was chosen. The zero-config SQLite default
+  therefore ran with vector search silently disabled (FTS-only) on every
+  install, reported by `check_setup`/`doctor` as fully ready. Separately,
+  `SqliteMemoryStore` stamped `embedding_model='neural'` on a memory whether
+  or not its vector actually persisted, so a memory written while sqlite-vec
+  was unavailable could be mislabelled as vector-backed and never resurface
+  for repair. Fixed: `sqlite-vec` is now part of the base install set and of
+  `requirements/setup.txt`'s generated closure; existing installs self-heal
+  on next launch; the store now stamps `'neural'` only after the vector
+  itself is confirmed written (`'fallback'` keeps stamping unconditionally,
+  per its own pre-existing contract), and the re-embed worklist self-heals
+  any row a prior install already mislabelled; `doctor`/`check_setup`'s
+  vector-search check is required, not optional, since sqlite-vec now ships
+  by default.
 - **A failed `scripts/setup.py` no longer discards the plugin's backend
   decision (#633).** `install-plugin.sh` wrote `~/.claude/methodology/backend.json`
   only after running `scripts/setup.py`, guarded by `|| fail ...`. Any setup

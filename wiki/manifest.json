@@ -3524,6 +3524,10 @@
       "mirror": "ADR-1088-persist-install-plugin.sh-s-backend-marker-before-scripts-setup.py-can-fail.md",
       "path": "adr/cortex/1088-persist-install-plugin.sh-s-backend-marker-before-scripts-setup.py-can-fail.md"
     },
+    "ADR-1089": {
+      "mirror": "ADR-1089-stamp-neural-only-after-the-vector-actually-lands.md",
+      "path": "adr/cortex/1089-stamp-neural-only-after-the-vector-actually-lands.md"
+    },
     "ADR-1090": {
       "mirror": "ADR-1090-gate-pg-only-wiki-passes-once-at-wiring-time-instead-of-catching-their-attributeerror.md",
       "path": "adr/cortex/1090-gate-pg-only-wiki-passes-once-at-wiring-time-instead-of-catching-their-attributeerror.md"
