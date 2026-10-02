@@ -66,22 +66,11 @@ updates:
     commit-message:
       prefix: "build"
 
-  # Python dependencies are declared in pyproject.toml and locked in uv.lock.
-  #
-  # Note on what these PRs still require by hand: Dependabot rewrites a version
-  # specifier — in pyproject.toml, or directly in one of the generated
-  # requirements/*.txt exports it reads as a manifest — and never runs `uv lock`
-  # or scripts/generate_pip_constraints.py. Every `deps` PR therefore arrives
-  # failing the two Lint steps that guard exactly that chain (`uv lock --check`,
-  # `generate_pip_constraints.py --check`). Resync before merging:
-  #
-  #   uv lock --upgrade-package <name>      # uv 0.11.3, the version ci.yml pins
-  #   python scripts/generate_pip_constraints.py
-  #
-  # source: ADR-0801
-
-
-  - package-ecosystem: "pip"
+  # Python dependencies are declared in pyproject.toml and locked in uv.lock,
+  # the only dependency file: the uv ecosystem rewrites both through
+  # `uv lock --upgrade-package`, so its PRs need no follow-up commit.
+  # source: ADR-1092
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -148,3 +137,22 @@ updates:
 
       - dependency-name: "pydantic-core"
         versions: [">2.46.4,<2.48.0"]
+
+      # Locked at one version per platform range by the `platform-bounds`
+      # group of pyproject.toml (and sentence-transformers through its
+      # transformers range). Dependabot's updater asks uv for ONE version,
+      # `uv lock --upgrade-package <name>==<latest>`, which those ranges
+      # refuse: run against this lock, the updater recorded
+      # `dependency_file_not_resolvable` for each of them on every run and
+      # could never open their pull request. They are bumped by hand:
+      # `uv lock --upgrade-package <name>` moves each platform to the newest
+      # version its range allows (CONTRIBUTING.md). An ignored package gets
+      # no security pull request either: its alert still shows in the
+      # Security tab and is fixed with the same command.
+      # source: ADR-1092
+      - dependency-name: "torch"
+      - dependency-name: "onnxruntime"
+      - dependency-name: "numpy"
+      - dependency-name: "transformers"
+      - dependency-name: "sentence-transformers"
+      - dependency-name: "cryptography"

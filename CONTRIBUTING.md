@@ -23,7 +23,11 @@ results (LongMemEval Recall@10 = 98.2%, LoCoMo Recall@10 = 94.2%, BEAM-10M
 
 ## Dev setup
 
-**Prerequisites:** Python 3.10+ and `uvx` (`pip install uv` or `pipx install uv`).
+**Prerequisites:** Python 3.10+ and `uv` with `uvx` (`pip install uv` or `pipx install uv`).
+`uv` itself must be on `PATH` for `pytest`, not only `uvx`: once psycopg is
+installed, pytest's start-up check (`scripts/check_venv_lock_parity.py`) runs
+`uv export` to compare your venv with `uv.lock`, and stops with an explicit
+error when `uv` is missing. The launcher tests resolve the locked sets with it too.
 The default store is a local SQLite file — nothing to provision. PostgreSQL 17
 + pgvector is only needed to run the PostgreSQL-backed integration tests.
 
@@ -39,7 +43,7 @@ cd Cortex
 # CI's SQLite job installs ".[dev,sqlite,codebase]"; its PG job adds
 # `postgresql`. Install all of them so your run is the stricter one.
 # `uv sync`, not `pip install -e`: sync resolves from uv.lock, which is what
-# CI installs (as the hash-pinned requirements/ exported from it). Resolving
+# CI installs (`uv sync --locked`, hash-verified). Resolving
 # from the pyproject.toml ranges instead lands you on versions CI never had —
 # issue #253, where that gap cost a contributor a phantom type error.
 uv sync --no-default-groups \
@@ -57,12 +61,27 @@ pytest
 python benchmarks/longmemeval/run_benchmark.py --variant s
 ```
 
+### Bumping a dependency
+
+Dependabot's `uv` updates rewrite `pyproject.toml` and `uv.lock` together and
+need no follow-up commit. Six packages are excluded from them in
+`.github/dependabot.yml` (torch, onnxruntime, numpy, transformers,
+sentence-transformers, cryptography): the lock holds one version of each per
+platform range (the `platform-bounds` group of `pyproject.toml`), and
+Dependabot can only ask for a single version. That also means no automatic
+security pull request for them: a Dependabot alert on one of the six is
+fixed with the same command. Bump those by hand, then run the suite:
+
+```bash
+uv lock --upgrade-package torch      # each platform moves within its range
+pytest tests_py/scripts/test_launcher_platform_coverage.py
+```
+
 ### Reproducing the pyright gate locally
 
 The gate is zero-diagnostic, so its answer only means something if your
-environment is CI's. Build it from `uv.lock` — the same lock CI installs from,
-via the hash-pinned `requirements/ci-typecheck.txt` that
-`scripts/generate_pip_constraints.py` exports from it:
+environment is CI's. Build it from `uv.lock` — the same lock CI's Type Check
+job installs from with `uv sync --locked`:
 
 ```bash
 uv sync --no-default-groups \
@@ -76,8 +95,7 @@ Do **not** resolve this environment from the `pyproject.toml` ranges
 differs, so the gate reports one thing to you and another to CI. That is issue
 #253 — a contributor chasing a `tree-sitter-language-pack` diagnostic CI never
 saw. The extras above are not a hand-kept list: they are asserted equal to the
-`ci-typecheck.txt` / `typecheck-tool.txt` entries of
-`scripts/pip_constraint_sets.py` by
+`set:` CI's Type Check job installs by
 `tests_py/scripts/test_typecheck_env_parity.py`, which fails if this block and
 CI's install ever drift apart.
 
