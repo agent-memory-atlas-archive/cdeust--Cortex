@@ -269,7 +269,7 @@ def _store_memory(tool_name: str, content: str, tags: list[str], cwd: str) -> No
         "force": False,
     }
     if dispatch(payload):
-        _log(f"queued {tool_name} for resident capture (persistence pending)")
+        _log(f"queued {tool_name} for capture (persistence pending)")
 
 
 # ── Periodic cascade advancement ──────────────────────────────────────

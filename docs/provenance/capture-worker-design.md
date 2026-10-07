@@ -44,15 +44,33 @@ lose accepted work. There is no automatic replay after uncertain delivery, which
 could duplicate a write. Durable delivery is outside this change.
 
 Absent/refused socket triggers one launch attempt. Spawn, transport, malformed
-frame, unsupported platform and admission-deadline failures produce a diagnostic and a
-`capture_skipped` telemetry sample; inference never falls back into the hook.
+frame and admission-deadline failures produce a diagnostic and a
+`capture_skipped` telemetry sample; a failed worker never falls back into the hook.
 Dispatch, receive and processing errors report their measured monotonic duration.
 Listener/cleanup failures use a distinct `capture_worker_lifecycle` sample with
 their own measured duration. Neither event is recorded as `remember`, so these
 diagnostics do not enter the handler's `remember` latency series.
-Worker handler failure has the same observable error boundary. Windows is
-explicitly unsupported because this implementation requires Unix credentials,
-Unix socket paths and `flock`; no TCP or abstract-socket fallback exists.
+Worker handler failure has the same observable error boundary. A platform the worker
+cannot run on (Windows: CPython has no `AF_UNIX`, no `fcntl`, no `geteuid`, and
+`Popen` has no `pass_fds`) is decided by the capability test
+`capture_peer.is_supported()`, before any I/O, not by catching an error. There the
+hook never loads the handler: importing `sentence_transformers` alone measured
+3.61 s on 2026-10-07 (macOS, isolated SQLite store, `torch` 0.72 s, warm), against a
+hook `timeout` of 10 s. It validates the payload, writes it atomically to
+`.capture-worker/spool/<time>-<pid>-<id>.json` and starts `capture_drain` detached
+(`capture_dispatch.popen_options`: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on
+Windows, `start_new_session` elsewhere, no inherited descriptors; stderr to
+`drain.log`), without waiting.
+The drainer takes a non-blocking kernel lock (`msvcrt.locking` / `flock`); a drainer
+that loses it exits, the winner stores every pending file through the same
+`capture_store.store` the worker awaits (one model load per burst), deletes each file
+only after it was stored, releases the lock and scans once more, so a file written
+during the release is never stranded. Delivery is at-least-once; a replay is absorbed
+by the write gate. A refused or failing file is renamed `*.rejected` and reported as
+`capture_skipped`. No TCP, abstract-socket or named-pipe transport is built: the spool
+needs none, and a named pipe with a current-user DACL would add a second transport,
+lease and spawn implementation (issue #659, ADR-1094). `ci.yml`'s Windows leg runs the
+capture test files, so the native Windows behaviour is exercised there.
 
 ## Protocol and trust boundary
 

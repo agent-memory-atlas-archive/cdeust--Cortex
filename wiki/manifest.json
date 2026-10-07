@@ -3543,6 +3543,10 @@
     "ADR-1093": {
       "mirror": "ADR-1093-publish-cross-parameter-constraints-in-the-tool-input-schema.md",
       "path": "adr/cortex/1093-publish-cross-parameter-constraints-in-the-tool-input-schema.md"
+    },
+    "ADR-1094": {
+      "mirror": "ADR-1094-spool-captures-for-a-detached-drainer-where-the-resident-worker-cannot-run.md",
+      "path": "adr/cortex/1094-spool-captures-for-a-detached-drainer-where-the-resident-worker-cannot-run.md"
     }
   },
   "project": "cortex",
