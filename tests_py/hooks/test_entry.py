@@ -25,6 +25,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests_py._hermetic_hook_env import await_capture_worker_exit, hermetic_hook_env
+
 # tomllib is 3.11+; requires-python is >=3.10 (pyproject.toml), so the
 # fallback backport is used on 3.10, exactly like build/hatchling's own
 # dependency on it (uv.lock: tomli, marker python_full_version < "3.11").
@@ -51,12 +53,13 @@ HOOK_MODULES = (
 )
 
 
-def _benign_event(tmp_path: Path) -> str:
+def _benign_event(tmp_path: Path, module: str = "") -> str:
     target = tmp_path / "seen.txt"
     target.write_text("hello\n", encoding="utf-8")
+    # a session_id starts a detached dream cycle nobody can wait on
     return json.dumps(
         {
-            "session_id": "t",
+            "session_id": None if module == "session_lifecycle" else "t",
             "cwd": str(tmp_path),
             "tool_name": "Read",
             "tool_input": {"file_path": str(target)},
@@ -81,8 +84,8 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
 
 @pytest.mark.parametrize("module", HOOK_MODULES)
 def test_entry_matches_launcher_on_benign_event(module: str, tmp_path: Path) -> None:
-    event = _benign_event(tmp_path)
-    env = _isolated_env(tmp_path)
+    event = _benign_event(tmp_path, module)
+    env, project = hermetic_hook_env(_isolated_env(tmp_path), tmp_path)
 
     via_entry = subprocess.run(
         [sys.executable, "-m", "mcp_server.hooks.entry", module],
@@ -90,7 +93,7 @@ def test_entry_matches_launcher_on_benign_event(module: str, tmp_path: Path) -> 
         capture_output=True,
         text=True,
         env=env,
-        cwd=REPO_ROOT,
+        cwd=project,
     )
     via_launcher = subprocess.run(
         [sys.executable, str(LAUNCHER_PATH), f"mcp_server.hooks.{module}"],
@@ -98,9 +101,10 @@ def test_entry_matches_launcher_on_benign_event(module: str, tmp_path: Path) -> 
         capture_output=True,
         text=True,
         env=env,
-        cwd=REPO_ROOT,
+        cwd=project,
     )
 
+    await_capture_worker_exit(env)
     assert via_entry.returncode == via_launcher.returncode, (
         via_entry.stderr,
         via_launcher.stderr,
