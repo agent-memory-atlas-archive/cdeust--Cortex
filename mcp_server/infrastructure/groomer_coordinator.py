@@ -23,6 +23,7 @@ import hashlib
 import os
 from mcp_server.infrastructure.backend_marker import effective_backend
 from mcp_server.infrastructure.memory_config import get_memory_settings
+from mcp_server.infrastructure.groomer_identity import LivenessProbeUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +145,21 @@ class GroomerCoordinator:
         """True iff ``groomer.pid`` names a live process (liveness-validated, not
         a bare flag).
 
-        source: ADR-0527"""
+        precondition: none. postcondition: False when ``groomer.pid`` is
+        missing or unparseable. Raises
+        ``LivenessProbeUnavailableError`` when the liveness probe cannot read
+        the process table (ADR-1097 point 3).
+
+        source: ADR-0527 (probe failure: ADR-1097)"""
         try:
-            raw = self.pid_path.read_text(encoding="utf-8").strip()
-            return pid_alive(int(raw))
+            pid = int(self.pid_path.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             return False
+        try:
+            return pid_alive(pid)
+        except OSError as exc:
+            # must not read as "not running": that would spawn a duplicate cycle
+            raise LivenessProbeUnavailableError(str(exc)) from exc
 
     # ── the exactly-one-per-period gate ─────────────────────────────────
 

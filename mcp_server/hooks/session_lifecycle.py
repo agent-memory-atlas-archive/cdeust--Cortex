@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -303,21 +302,26 @@ def _tombstone_session_registry() -> None:
 def _deregister_groomer_coordinator() -> None:
     """Best-effort SessionEnd deregistration for the shared groomer (#171).
 
-    precondition: called from a SessionEnd hook's python process — the same
-    process whose pid ``SessionStart`` registered via ``os.getpid()``.
+    precondition: called from a SessionEnd hook's python process, a descendant
+    of the window's ``claude`` process — the pid ``SessionStart`` registered
+    (``window_pid()``); the hook's own pid is short-lived and never registered.
     postcondition: this session's registration is removed from the per-store
     ``GroomerCoordinator``; if it was the LAST live session, the groomer's
     single-instance marker is cleared (last-exit stop). Never raises — must
     not block the profile update / consolidation that follows.
-    """
+
+    source: ADR-1097 (SessionEnd stays non-fatal, point 4)"""
     try:
         from mcp_server.infrastructure.groomer_coordinator import (  # noqa: PLC0415 — hook latency boundary: the per-event hook process defers the handler/store stack (hook boot ~0.05 s vs ~0.6 s registry import, measured 2026-07-28)
             GroomerCoordinator,
             resolve_store_key,
         )
+        from mcp_server.infrastructure.groomer_identity import (  # noqa: PLC0415 — hook latency boundary: see above
+            window_pid,
+        )
 
         coord = GroomerCoordinator(resolve_store_key())
-        if coord.stop_if_last(os.getpid()):
+        if coord.stop_if_last(window_pid()):
             _log("groomer coordinator: last session exited, groomer stopped")
     except Exception as exc:  # noqa: BLE001 — hook boundary — failure is logged to the hook log; the hook stays non-fatal
         _log(f"groomer coordinator deregister skipped (non-fatal): {exc}")
