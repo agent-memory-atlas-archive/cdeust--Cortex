@@ -1,6 +1,11 @@
 """Per-window session registry — T2-handlers increment H1 (foundation).
 
-source: ADR-0597"""
+Windows (issue #665, ADR-1096): an unreadable process table or an undocumented
+``OpenProcess`` error raises ``OSError`` from the functions that resolve a pid
+or probe liveness. Hooks and handlers log it; ``scripts/groomer.py`` has no
+handler, so a manual Windows run ends in a traceback and a nonzero exit.
+
+source: ADR-1096 (Windows; POSIX: ADR-0597)"""
 
 from __future__ import annotations
 
@@ -11,7 +16,10 @@ import tempfile
 import time
 from pathlib import Path
 
+from mcp_server.infrastructure import process_ancestry
 from mcp_server.infrastructure.file_io import read_json
+from mcp_server.shared import platform as host_platform
+from mcp_server.shared.process_liveness import pid_alive as _pid_alive
 
 # source: ADR-0597
 _SCHEMA_VERSION = 1
@@ -38,23 +46,6 @@ def registry_path(claude_pid: int) -> Path:
     return registry_dir() / f"{claude_pid}.json"
 
 
-def _pid_alive(pid: int) -> bool:
-    """True iff ``pid`` currently identifies a live process.
-
-    source: ADR-0597"""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
 # source: ADR-0597
 _start_signature_cache: dict[int, str] = {}
 
@@ -62,13 +53,13 @@ _start_signature_cache: dict[int, str] = {}
 def _cached_process_start_signature(pid: int) -> str | None:
     """Process-lifetime cache wrapper around ``_process_start_signature``.
 
-    precondition: none beyond ``_process_start_signature``'s.
-        postcondition: returns the same value ``_process_start_signature
-        (pid)`` would, but the underlying ``/proc`` read or ``ps``
-        subprocess runs at most once per distinct ``pid`` for this
-        server's lifetime.
+    postcondition: same value as ``_process_start_signature(pid)``, read at
+        most once per distinct ``pid`` for this server's lifetime. Windows
+        keeps the cache too: the server is a descendant of the claude
+        process and exits with it, so the pid cannot be recycled under a
+        live server (ADR-1096 point 4).
 
-    source: ADR-0597"""
+    source: ADR-1096 (Windows; POSIX: ADR-0597)"""
     cached = _start_signature_cache.get(pid)
     if cached is not None:
         return cached
@@ -81,7 +72,9 @@ def _cached_process_start_signature(pid: int) -> str | None:
 def _process_start_signature(pid: int) -> str | None:
     """Opaque per-process start-time token.
 
-    source: ADR-0597"""
+    source: ADR-1096 (Windows branch; POSIX: ADR-0597)"""
+    if host_platform.IS_WINDOWS:
+        return process_ancestry.start_signature(pid)
     stat_path = Path(f"/proc/{pid}/stat")
     if stat_path.exists():
         try:
@@ -133,7 +126,9 @@ def find_claude_ancestor(max_depth: int = _MAX_ANCESTOR_DEPTH) -> int | None:
     claude. Return None on probe failure, reaching a root process, or exhausting
     max_depth. Intended for hook processes.
 
-    source: ADR-0597"""
+    source: ADR-1096 (Windows branch; POSIX: ADR-0597)"""
+    if host_platform.IS_WINDOWS:
+        return process_ancestry.claude_ancestor_pid(os.getpid(), max_depth)
     pid = os.getppid()
     for _ in range(max_depth):
         info = _ppid_and_comm(pid)
@@ -206,14 +201,27 @@ def tombstone(claude_pid: int) -> bool:
     return write_session(None, claude_pid=claude_pid)
 
 
+def _window_claude_pid() -> int | None:
+    """The ``claude`` pid of this MCP server's window: ``os.getppid()`` on
+    POSIX; on Windows (server parent is ``cmd.exe``) the nearest
+    ``claude.exe`` ancestor, cached per server process.
+
+    source: ADR-1096"""
+    if not host_platform.IS_WINDOWS:
+        return os.getppid()
+    return process_ancestry.cached_window_pid(find_claude_ancestor)
+
+
 def current_window_session() -> str | None:
     """Return the current MCP server window session identity, or None when no valid
-    session is registered. Called from a direct child of the window claude
-    process. Rejects missing, unreadable, malformed, tombstoned, or stale-
-    lineage registry entries.
+    session is registered. Called from the MCP server process (see
+    ``_window_claude_pid`` for how its window is found). Rejects missing,
+    unreadable, malformed, tombstoned, or stale-lineage registry entries.
 
-    source: ADR-0597"""
-    claude_pid = os.getppid()
+    source: ADR-1096 (Windows branch; POSIX: ADR-0597)"""
+    claude_pid = _window_claude_pid()
+    if claude_pid is None:
+        return None
     data = read_json(registry_path(claude_pid))
     if not isinstance(data, dict):
         return None
@@ -237,10 +245,10 @@ def purge_dead_entries() -> int:
         Exposed for H2 to call from the SessionStart hook. No daemon, no
         TTL: the only leak is a closed window's file.
 
-    postcondition: returns count of files removed; never raises — an
-        unreadable directory or file is skipped, not fatal.
+    postcondition: returns count of files removed; raises no I/O error (an
+        unreadable directory or file is skipped) — Windows: see module note.
 
-    source: ADR-0597"""
+    source: ADR-1096 (Windows branch; POSIX: ADR-0597)"""
     removed = 0
     d = registry_dir()
     try:
@@ -264,12 +272,11 @@ def purge_dead_entries() -> int:
 
 
 def has_active_session_window() -> bool:
-    """Precondition: none. Postcondition: scans every ``registry_dir()`` entry; returns
-    True on
-        the first live ``claude_pid`` whose entry carries a non-empty
-        ``session_id``.
+    """Precondition: none. Postcondition: scans every ``registry_dir()`` entry;
+    True on the first live ``claude_pid`` whose entry has a non-empty
+    ``session_id``. Windows: may raise ``OSError`` (see module note).
 
-    source: ADR-0597"""
+    source: ADR-1096 (Windows branch; POSIX: ADR-0597)"""
     d = registry_dir()
     try:
         entries = list(d.iterdir())
