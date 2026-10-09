@@ -7,13 +7,17 @@ event-derivation and per-run mechanics it delegates to).
 
 from __future__ import annotations
 
-import io
 import json
 import runpy
 import sys
 from typing import MutableMapping
 
 from mcp_server.hooks.host_event import HostEventError, normalize_event
+from mcp_server.hooks.stdin_event import (
+    HookStdinDecodeError,
+    install_event_stdin,
+    read_event_text,
+)
 
 # Hook classes that block a tool call by exiting non-zero, per
 # .claude-plugin/plugin.json: decision_gate and no_deps_gate are the only
@@ -44,7 +48,7 @@ def run_event(module: str, payload: str) -> int:
     """Run ``module`` as ``__main__`` against one derived stdin payload; its
     exit code, or 1 with a stderr line for any exception it left uncaught."""
     sys.argv = [module]
-    sys.stdin = io.StringIO(payload)
+    install_event_stdin(payload)
     try:
         runpy.run_module(module, run_name="__main__", alter_sys=True)
     except SystemExit as exc:
@@ -106,3 +110,21 @@ def derive_events(module: str, raw: str) -> tuple[list[str], str | None, str | N
         print(f"[hypermnesia-mcp-hook] {module}: {exc}", file=sys.stderr)
         sys.exit(2 if hook_event_name == PRE_TOOL_USE else 1)
     return [json.dumps(e) for e in derived], hook_event_name, event.get("cwd")
+
+
+def read_event_or_exit(name: str) -> str:
+    """The exact stdin text, or report undecodable bytes and exit 1.
+
+    Precondition: ``name`` is an allowlisted hook name (``entry.HOOK_MODULES``).
+    Postcondition: returns the UTF-8 decoded stdin text; on undecodable bytes
+    prints ``[hypermnesia-mcp-hook] <module>: <err>`` and exits 1 for every
+    hook. The failure is loud and never blocks a tool call: the PreToolUse
+    gates keep their documented contract that a read or parse failure does
+    not block (``decision_gate``, ADR-1060). Nothing is decoded with
+    replacement and nothing is stored.
+    """
+    try:
+        return read_event_text()
+    except HookStdinDecodeError as exc:
+        print(f"[hypermnesia-mcp-hook] mcp_server.hooks.{name}: {exc}", file=sys.stderr)
+        sys.exit(1)
