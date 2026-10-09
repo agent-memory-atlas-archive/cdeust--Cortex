@@ -29,8 +29,8 @@ from mcp_server.handlers.injection_receipts import (
     session_id_from_transcript,
 )
 from mcp_server.hooks._telemetry import observe_hook
+from mcp_server.hooks.launcher_command import child_command, launcher_child_command
 from mcp_server.shared.freshness import provenance_suffix
-from mcp_server.shared.platform import python_executable
 from mcp_server.shared.log_rotation import methodology_log_path, open_rotating_log
 from mcp_server.shared.project_scope import (
     memory_matches_project,
@@ -853,17 +853,7 @@ def _spawn_consolidate_cycle() -> int | None:
     autonomous wiki maintenance — this is the SAME cycle as before; #171
     changes only WHO decides to start it, never what it does.
     """
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(
-        Path(__file__).resolve().parents[2]
-    )
-    launcher = Path(plugin_root) / "scripts" / "launcher.py"
-    # source: ADR-0498
-    py = python_executable()
-    if launcher.exists():
-        cmd = [py, str(launcher), "mcp_server.hooks.consolidate_background"]
-    else:
-        # Fall back to direct -m invocation (dev source is the package root).
-        cmd = [py, "-m", "mcp_server.hooks.consolidate_background"]
+    cmd = child_command("mcp_server.hooks.consolidate_background")
 
     log_path = methodology_log_path("consolidate.log")
     with open_rotating_log(log_path) as log:
@@ -968,21 +958,12 @@ def _maybe_background_reanalyze() -> None:
 
         # Spawn background ingest. scripts/launcher.py handles PYTHONPATH
         # + deps, then runs the ingest_codebase handler as a one-shot CLI.
-        plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(
-            Path(__file__).resolve().parents[2]
+        cmd = launcher_child_command(
+            "mcp_server.hooks.ingest_codebase_background", project_root
         )
-        launcher = Path(plugin_root) / "scripts" / "launcher.py"
-        if not launcher.exists():
+        if cmd is None:
             return
 
-        # source: ADR-0498
-        py = python_executable()
-        cmd = [
-            py,
-            str(launcher),
-            "mcp_server.hooks.ingest_codebase_background",
-            project_root,
-        ]
         # Rotate before spawn; the inherited fd stays open for the worker.
         log_path = methodology_log_path("pipeline_reanalyze.log")
         with open_rotating_log(log_path) as log:
