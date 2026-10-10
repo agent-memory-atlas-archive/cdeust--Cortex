@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mcp_server.hooks.output_streams import use_utf8_output
 from mcp_server.hooks.stdin_event import read_event_text
 from mcp_server.handlers.injection_receipts import (
     emit_hook_receipt,
@@ -125,6 +126,7 @@ def _try_setup_db() -> dict | None:
             capture_output=True,
             timeout=15,
             text=True,
+            encoding="utf-8",  # setup_db.py prints json.dumps, ASCII
             env={**os.environ, "DATABASE_URL": _DATABASE_URL},
         )
         if r.stdout.strip():
@@ -1348,6 +1350,7 @@ def _print_external_sources() -> None:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     # No-op inside the headless wiki-authoring subprocess (see
     # _headless_guard): prevents recursion + memory pollution when
     # ``claude -p --setting-sources user`` loads the user hooks.

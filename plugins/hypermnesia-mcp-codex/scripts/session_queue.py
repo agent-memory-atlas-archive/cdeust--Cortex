@@ -65,7 +65,7 @@ def environment():
         marker = queue_root().parent / "backend.json"
         backend = "auto"
         try:
-            saved = json.loads(marker.read_text())["backend"]
+            saved = json.loads(marker.read_text(encoding="utf-8"))["backend"]
             if saved not in {"sqlite", "postgresql"}:
                 raise ValueError("invalid saved Cortex backend")
             backend = saved
@@ -96,7 +96,7 @@ def enqueue(root, event):
         return key
     fd, tmp = tempfile.mkstemp(dir=root)
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(
                 {"event": event, "environment": environment(), "cwd": str(Path.cwd())},
                 stream,
@@ -115,7 +115,7 @@ def enqueue(root, event):
 
 def spawn(root):
     fd = os.open(root / "worker.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    with os.fdopen(fd, "a") as log:
+    with os.fdopen(fd, "a", encoding="utf-8") as log:
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "drain"],
             stdin=subprocess.DEVNULL,
@@ -153,7 +153,7 @@ def run_job(path):
     if receipt(path).exists():
         path.unlink()
         return
-    job = json.loads(path.read_text())
+    job = json.loads(path.read_text(encoding="utf-8"))
     env = {
         k: v
         for k, v in os.environ.items()
@@ -169,6 +169,7 @@ def run_job(path):
         ],
         input=json.dumps(job["event"]),
         text=True,
+        encoding="utf-8",  # the hook reads its stdin as strict UTF-8 (#664)
         env=env,
         cwd=job["cwd"],
         check=False,
@@ -196,7 +197,7 @@ def drain(root):
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                     0o600,
                 )
-                with os.fdopen(fd, "w") as stream:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
                     stream.write(message)
 
 
@@ -237,7 +238,7 @@ def main():
             file=sys.stderr,
         )
         for error in root.glob("*.error"):
-            print(error.read_text(), file=sys.stderr)
+            print(error.read_text(encoding="utf-8"), file=sys.stderr)
         spawn(root)
 
 

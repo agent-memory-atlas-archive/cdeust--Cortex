@@ -35,6 +35,27 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Hooks write UTF-8 to stdout and stderr on every platform and entry point,
+  and the wiki reindex reads and writes UTF-8** (#688). A text-mode stdout
+  encodes with the locale code page (cp1252 on a Windows pipe), so
+  `auto_recall` died with `UnicodeEncodeError` on the `U+27E6` that opens every
+  injection receipt. Only the plugin launcher reconfigured its streams (with
+  `errors="replace"`); the Codex `hypermnesia-mcp-hook` entry and a direct
+  `python -m mcp_server.hooks.<hook>` run did not. The decision now lives in
+  one place, `mcp_server/hooks/output_streams.py`: stdout is strict UTF-8 (a
+  lone surrogate fails loudly, nothing is replaced), stderr is UTF-8 with
+  CPython's own `backslashreplace`, and a stream that cannot be reconfigured
+  raises. Every hook `__main__` block that writes, `hooks/entry.py` and the
+  launcher call it; `tests_py/hooks/test_output_streams_guard.py` fails a hook
+  entry point that writes without it. `scripts/setup.py` (piped through `tee`
+  by the installer) uses it too, three developer-script arrows outside cp1252
+  are now ASCII, and `wiki_reindex_io` and the Codex `session_queue` error file
+  no longer use the default encoding. The doctor entry points (`cortex-doctor`
+  and `cortex-doctor mcp`) set stdout to UTF-8 first: their fix hints print
+  `U+2192`, and on a cp1252 pipe they died on the failure they were reporting.
+  Product code that decodes a child process's output names the encoding (`uv`,
+  `git`, the Codex session queue). The decision is ADR-1098.
+
 - **`benchmarks/lib/bench_regression.sh` runs under the macOS system bash
   3.2.57** (#690). The baseline worktree cleanup trap expanded a function-local
   `wt_dir` when it fired; under `bash -c` and 3.2 the locals are already gone
