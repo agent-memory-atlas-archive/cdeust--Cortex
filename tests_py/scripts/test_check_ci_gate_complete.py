@@ -145,9 +145,7 @@ class PipelineGateTests(unittest.TestCase):
         changed = change_job(
             self.workflow,
             "tag",
-            lambda block: block.replace(
-                "if: github.event_name", "if: always() && github.event_name"
-            ),
+            lambda block: block.replace("!cancelled()", "always()", 1),
         )
         self.assertTrue(gate.check_runtime_contract(changed))
 

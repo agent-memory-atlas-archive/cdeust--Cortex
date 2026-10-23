@@ -1,7 +1,7 @@
 """Check the generated Pipeline dependencies and merge/release gates.
 
 Source: zetetic-team-subagents single-ci design (2026-10-22), and
-.github/workflows/pipeline.yml template 247a56967a66dc056eed9ddbb704e56b2b311f81.
+zetetic-team-subagents PR189 reusable Pipeline and protected merge resolver.
 """
 
 from __future__ import annotations
@@ -10,13 +10,20 @@ import re
 import sys
 from pathlib import Path
 
+# source: direct CLI execution and importlib-based contract tests in this repository.
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+from ci_pipeline_source_contract import check_sources  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pipeline.yml"
 # Source: the generated Pipeline contract and sequential test categories.
 TEST_JOBS = ("unit", "regression", "e2e", "environment", "install")
 REQUIRED_RESULTS = ("contract", *TEST_JOBS)
 EXPECTED_NEEDS = {
-    "contract": (),
+    "resolve": (),
+    "contract": ("resolve",),
     "unit": ("contract",),
     "regression": ("contract", "unit"),
     "e2e": ("contract", "regression"),
@@ -26,17 +33,41 @@ EXPECTED_NEEDS = {
     "merge": (*REQUIRED_RESULTS, "review"),
     "tag": REQUIRED_RESULTS,
 }
-# Source: generated review/merge conditions; tag inherits GitHub success().
+# Source: PR189 explicit result guards prevent skipped resolve propagating to tests.
 _PR_CONDITION = (
     "always() && !cancelled() && github.event_name == 'pull_request' "
     "&& !github.event.pull_request.draft "
     "&& github.event.pull_request.head.repo.full_name == github.repository"
 )
 EXPECTED_CONDITIONS = {
+    "resolve": (
+        "github.event_name == 'workflow_run' "
+        "&& github.event.workflow_run.event == 'pull_request' "
+        "&& github.event.workflow_run.conclusion == 'success'"
+    ),
+    "contract": (
+        "always() && !cancelled() && (github.event_name != 'workflow_run' "
+        "|| (needs.resolve.result == 'success' "
+        "&& needs.resolve.outputs.run_tests == 'true'))"
+    ),
     "review": _PR_CONDITION + " && github.actor != 'dependabot[bot]'",
     "merge": _PR_CONDITION,
-    "tag": "github.event_name == 'push'",
+    "tag": (
+        "!cancelled() && (github.event_name == 'push' "
+        "|| github.event_name == 'workflow_run')"
+        + "".join(f" && needs.{job}.result == 'success'" for job in REQUIRED_RESULTS)
+    ),
 }
+EXPECTED_CONDITIONS.update(
+    {
+        job: "!cancelled()"
+        + "".join(
+            f" && needs.{dependency}.result == 'success'"
+            for dependency in EXPECTED_NEEDS[job]
+        )
+        for job in TEST_JOBS
+    }
+)
 _JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 
 
@@ -172,7 +203,7 @@ def _check_merge_results(body: list[str]) -> list[str]:
 
 
 def check_runtime_contract(text: str) -> list[str]:
-    """Keep tests unconditional and merge/release gates on their intended events."""
+    """Require successful prerequisites and the intended merge/release events."""
     try:
         bodies = _job_bodies(text)
         failures = []
@@ -182,11 +213,15 @@ def check_runtime_contract(text: str) -> list[str]:
                 failures.append(
                     f"{job} has an unsafe job-level condition: {condition!r}"
                 )
-            if job in REQUIRED_RESULTS and _field(
+            if job in ("resolve", *REQUIRED_RESULTS) and _field(
                 bodies.get(job, []), "continue-on-error"
             ) not in ("", "false"):
                 failures.append(f"{job} must not ignore failures")
-        return failures + _check_merge_results(bodies.get("merge", []))
+        return (
+            failures
+            + _check_merge_results(bodies.get("merge", []))
+            + check_sources(bodies, _field, TEST_JOBS, text)
+        )
     except ValueError as error:
         return [str(error)]
 

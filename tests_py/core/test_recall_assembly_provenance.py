@@ -1,6 +1,7 @@
 """Real stage assembly over a deterministic retrieval/store boundary.
 
-source: ADR-0217; adjacent context serves domain-scoped supersession heads.
+source: ADR-0217
+Adjacent context serves domain-scoped supersession heads.
 Only initial search is replaced; graph traversal, filtering and rendering run.
 """
 
