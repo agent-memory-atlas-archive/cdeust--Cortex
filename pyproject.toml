@@ -623,6 +623,9 @@ markers = [
 
 [tool.coverage.run]
 source = ["mcp_server"]
+# source: https://pytest-cov.readthedocs.io/en/latest/subprocess-support.html
+# pytest-cov 7 requires coverage.py to instrument Python subprocesses.
+patch = ["subprocess"]
 
 [tool.coverage.report]
 show_missing = true

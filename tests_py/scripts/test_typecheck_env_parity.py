@@ -15,6 +15,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CI = json.loads((REPO / "ci.json").read_text(encoding="utf-8"))
+UNIT_SCRIPT = (REPO / "scripts" / "ci_unit.sh").read_text(encoding="utf-8")
 PIPELINE = (REPO / ".github/workflows/pipeline.yml").read_text(encoding="utf-8")
 CONTRIBUTING = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
 CLAUDE_MD = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
@@ -87,9 +88,12 @@ class CiPythonEnvironmentTest(unittest.TestCase):
 
     def test_test_jobs_share_the_locked_dependency_selection(self) -> None:
         unit = _sync_command(CI["unit"])
-        self.assertEqual(unit, _sync_command(CI["regression"]))
+        regression = _sync_command(CI["regression"])
+        self.assertEqual(unit.strip(), regression.strip() + " --extra postgresql")
         self.assertIn("--locked", unit)
-        self.assertEqual(_flag_values(unit, "extra"), {"dev", "sqlite", "codebase"})
+        self.assertEqual(
+            _flag_values(unit, "extra"), {"dev", "sqlite", "codebase", "postgresql"}
+        )
         self.assertNotIn("--group typecheck", unit)
 
     def test_test_jobs_bootstrap_managed_python_then_pip_before_pytest(self) -> None:
@@ -104,15 +108,19 @@ class CiPythonEnvironmentTest(unittest.TestCase):
                     "uv python install 3.12",
                     sync,
                     "uv pip install pip",
-                    "uv run --no-sync pytest",
+                    "uv run --no-sync bash scripts/ci_unit.sh"
+                    if category == "unit"
+                    else "uv run --no-sync pytest",
                 )
                 positions = [command.index(stage) for stage in stages]
                 self.assertEqual(positions, sorted(positions))
 
-    def test_test_jobs_use_isolated_offline_sqlite_settings(self) -> None:
+    def test_test_jobs_use_isolated_offline_backend_settings(self) -> None:
+        self.assertIn("CORTEX_MEMORY_STORE_BACKEND=postgresql", UNIT_SCRIPT)
+        self.assertIn('export CORTEX_TEST_DATABASE_URL="$DATABASE_URL"', UNIT_SCRIPT)
+        self.assertIn("CORTEX_MEMORY_STORE_BACKEND=sqlite", CI["regression"])
         for category in ("unit", "regression"):
             with self.subTest(category=category):
-                self.assertIn("CORTEX_MEMORY_STORE_BACKEND=sqlite", CI[category])
                 self.assertIn("CORTEX_RERANKER_OFFLINE=1", CI[category])
 
     def test_pipeline_executes_the_repository_test_commands(self) -> None:
@@ -128,8 +136,8 @@ class CiPythonEnvironmentTest(unittest.TestCase):
                 self.assertIn('bash -eo pipefail -c "$CI_COMMAND"', job.group(1))
 
     def test_unit_produces_coverage_and_regression_selects_integration(self) -> None:
-        self.assertIn("--cov=mcp_server", CI["unit"])
-        self.assertIn("--cov-report=xml", CI["unit"])
+        self.assertIn("--cov=mcp_server", UNIT_SCRIPT)
+        self.assertIn("--cov-report=xml", UNIT_SCRIPT)
         self.assertIn("tests_py/integration", CI["regression"])
 
 
