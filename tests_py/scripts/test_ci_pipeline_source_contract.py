@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from test_check_ci_gate_complete import change_job, gate
+from tests_py.scripts.test_check_ci_gate_complete import change_job, gate
 
 
 class PipelineSourceTests(unittest.TestCase):
