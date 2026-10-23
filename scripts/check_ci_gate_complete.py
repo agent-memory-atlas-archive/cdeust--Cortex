@@ -53,7 +53,8 @@ EXPECTED_CONDITIONS = {
     "review": _PR_CONDITION + " && github.actor != 'dependabot[bot]'",
     "merge": _PR_CONDITION,
     "tag": (
-        "!cancelled() && (github.event_name == 'push' "
+        "!cancelled() && ((github.event_name == 'push' "
+        "&& github.ref == 'refs/heads/main') "
         "|| github.event_name == 'workflow_run')"
         + "".join(f" && needs.{job}.result == 'success'" for job in REQUIRED_RESULTS)
     ),

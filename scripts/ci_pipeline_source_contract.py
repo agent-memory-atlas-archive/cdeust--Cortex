@@ -51,7 +51,7 @@ def _check_checkout(body, field, expected: str, job: str) -> list[str]:
     refs = [line.strip() for line in step if line.startswith("      ref:")]
     failures = []
     if refs != [f"ref: {expected}"]:
-        failures.append(f"{job} must check out the tested source SHA")
+        failures.append(f"{job} must check out {expected}")
     condition = "steps.guard.outputs.has_deploy_key == 'true'" if job == "tag" else ""
     if field(step, "if") != condition or field(step, "continue-on-error") not in (
         "",
@@ -94,6 +94,55 @@ def _check_record(body, field) -> list[str]:
     return failures
 
 
+def _check_merge_confirmation(body, field) -> list[str]:
+    """Pin the post-PUT identity and main ancestry checks in the resolver."""
+    run = field(_required_step(body, field, "resolve"), "run")
+    clauses = (
+        'pr = api.request("GET", pr_path)',
+        '_pr_identity(pr, repository, original_pr["head"]["sha"])',
+        'require( pr.get("merged") is True and pr.get("merge_commit_sha") == sha,',
+        '"GET", f"/repos/{repository}/compare/main...{full_sha(sha)}"',
+        'require( comparison.get("status") in ("behind", "identical") '
+        'and comparison.get("merge_base_commit", {}).get("sha") == sha,',
+        "_confirm_main_merge(pr_path, pr, sha, api) if already_merged "
+        "and _has_push_pipeline(repository, sha, api):",
+    )
+    if any(clause not in run for clause in clauses):
+        return ["resolve must confirm the merged PR identity and main ancestry"]
+    return []
+
+
+def _check_release(body, field) -> list[str]:
+    """Keep publication on trusted code while explicitly targeting the tested SHA."""
+    step = _required_step(body, field, "publish")
+    failures = []
+    if field(step, "if") != "steps.guard.outputs.has_deploy_key == 'true'" or field(
+        step, "continue-on-error"
+    ) not in ("", "false"):
+        failures.append("tag publication must retain its execution and failure policy")
+    expected_env = (
+        "RELEASE_TAGS: ${{ needs.contract.outputs.release_tags }} "
+        f"TESTED_SHA: {TESTED_REF}"
+    )
+    if field(step, "env") != expected_env:
+        failures.append("tag must bind the tested SHA and declared release tags")
+    run = field(step, "run")
+    clauses = (
+        'sha = os.environ["TESTED_SHA"] validate(tags, sha) '
+        "published, existing = publish(tags, sha)",
+        'git("cat-file", "-t", sha).stdout.strip() != "commit"',
+        '"rev-parse", "--verify", "refs/remotes/origin/main^{commit}"',
+        'if git("rev-parse", "HEAD").stdout.strip() != trusted: raise ValueError(',
+        'git("merge-base", "--is-ancestor", sha, trusted)',
+        '"tag", "-a", "-m", "Release " + tag, "--", tag, sha,',
+    )
+    if any(clause not in run for clause in clauses):
+        failures.append(
+            "tag must verify main ancestry and publish the explicit tested SHA"
+        )
+    return failures
+
+
 def check_sources(bodies, field, test_jobs, text: str) -> list[str]:
     """Check producer output bindings, verification, and every consumer checkout."""
     failures = _check_resolver(bodies.get("resolve", []), field)
@@ -103,7 +152,11 @@ def check_sources(bodies, field, test_jobs, text: str) -> list[str]:
     ):
         failures.append("Pipeline must be reusable and cannot listen to itself")
     failures += _check_record(bodies.get("contract", []), field)
+    failures += _check_merge_confirmation(bodies.get("resolve", []), field)
+    failures += _check_release(bodies.get("tag", []), field)
     for job in ("contract", *test_jobs, "tag"):
         expected = SOURCE_REF if job == "contract" else TESTED_REF
+        if job == "tag":
+            expected = "main"
         failures += _check_checkout(bodies.get(job, []), field, expected, job)
     return failures
