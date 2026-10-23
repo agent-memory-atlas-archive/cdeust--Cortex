@@ -25,6 +25,7 @@ source: ADR-1114
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping
 
@@ -70,3 +71,34 @@ def why_not_eligible(
                 f"a SQLite store exists at {store}; it is not migrated by this release"
             )
     return ""
+
+
+def fallback_store_paths() -> list[str]:
+    """Persist the SQLite destinations that this fallback decision concerns."""
+    from mcp_server.infrastructure.config import METHODOLOGY_DIR  # noqa: PLC0415
+
+    return [
+        str(path.resolve()) for path in sqlite_store_paths(os.environ, METHODOLOGY_DIR)
+    ]
+
+
+def retains_fallback_store(previous: dict) -> bool:
+    """ADR-1114 D3: reuse a cause only for the same unconfigured first-launch store."""
+    if not previous.get("sqlite_fallback") or not previous.get("sqlite_fallback_paths"):
+        return False
+    import launcher_backend  # noqa: PLC0415 — sibling imports this module
+    from mcp_server.infrastructure import backend_marker  # noqa: PLC0415
+
+    configured = dict(os.environ)
+    launcher_backend.map_database_option(configured)
+    if backend_marker.environment_decides(configured):
+        return False
+    marker = backend_marker.read_backend_marker()
+    paths = fallback_store_paths()
+    return bool(
+        marker
+        and marker.get("backend") == "sqlite"
+        and marker.get("written_by") == launcher_backend.WRITTEN_BY
+        and previous.get("sqlite_fallback_paths") == paths
+        and any(Path(path).is_file() for path in paths)
+    )

@@ -26,10 +26,13 @@ class PgQueryStreamMixin(PgStoreHost):
 
         source: ADR-0561"""
         if last_heat is None:
-            where = "heat_base >= %s "
+            where = "heat_base >= %s::real "
             params: list[Any] = [min_heat]
         else:
-            where = "heat_base >= %s AND (heat_base, id) < (%s, %s) "
+            # heat_base is REAL (pg_schema.py). Recast the round-tripped
+            # cursor value to that type so float8 adaptation cannot split ties.
+            # source: https://www.psycopg.org/psycopg3/docs/basic/adapt.html#numbers-adaptation
+            where = "heat_base >= %s::real AND (heat_base, id) < (%s::real, %s) "
             params = [min_heat, last_heat, last_id]
         sql = (
             f"SELECT {columns} FROM memories WHERE {where}{bench_filter}"  # noqa: S608 — columns is the documented internal projection allowlist; page is int(); keyset values are bound parameters (docs/ASSURANCE-CASE.md §5)
