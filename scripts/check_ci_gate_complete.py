@@ -18,57 +18,18 @@ from ci_pipeline_source_contract import check_sources  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pipeline.yml"
-# Source: the generated Pipeline contract and sequential test categories.
-TEST_JOBS = ("unit", "regression", "e2e", "environment", "install")
-REQUIRED_RESULTS = ("contract", *TEST_JOBS)
-EXPECTED_NEEDS = {
-    "resolve": (),
-    "contract": ("resolve",),
-    "unit": ("contract",),
-    "regression": ("contract", "unit"),
-    "e2e": ("contract", "regression"),
-    "environment": ("contract", "e2e"),
-    "install": ("contract", "environment"),
-    "review": TEST_JOBS,
-    "merge": (*REQUIRED_RESULTS, "review"),
-    "tag": REQUIRED_RESULTS,
-}
-# Source: PR189 explicit result guards prevent skipped resolve propagating to tests.
-_PR_CONDITION = (
-    "always() && !cancelled() && github.event_name == 'pull_request' "
-    "&& !github.event.pull_request.draft "
-    "&& github.event.pull_request.head.repo.full_name == github.repository"
+POST_MERGE_WORKFLOW = CI_WORKFLOW.with_name("pipeline-post-merge.yml")
+CALLER_WORKFLOW = CI_WORKFLOW.with_name("pipeline-after-merge.yml")
+from ci_pipeline_profiles import (  # noqa: E402
+    DIRECT_NEEDS as EXPECTED_NEEDS,
+    POST_MERGE_NEEDS,
+    REQUIRED_RESULTS,
+    TEST_JOBS,
+    conditions,
 )
-EXPECTED_CONDITIONS = {
-    "resolve": (
-        "github.event_name == 'workflow_run' "
-        "&& github.event.workflow_run.event == 'pull_request' "
-        "&& github.event.workflow_run.conclusion == 'success'"
-    ),
-    "contract": (
-        "always() && !cancelled() && (github.event_name != 'workflow_run' "
-        "|| (needs.resolve.result == 'success' "
-        "&& needs.resolve.outputs.run_tests == 'true'))"
-    ),
-    "review": _PR_CONDITION + " && github.actor != 'dependabot[bot]'",
-    "merge": _PR_CONDITION,
-    "tag": (
-        "!cancelled() && ((github.event_name == 'push' "
-        "&& github.ref == 'refs/heads/main') "
-        "|| github.event_name == 'workflow_run')"
-        + "".join(f" && needs.{job}.result == 'success'" for job in REQUIRED_RESULTS)
-    ),
-}
-EXPECTED_CONDITIONS.update(
-    {
-        job: "!cancelled()"
-        + "".join(
-            f" && needs.{dependency}.result == 'success'"
-            for dependency in EXPECTED_NEEDS[job]
-        )
-        for job in TEST_JOBS
-    }
-)
+from ci_pipeline_routes import check_profile_route, check_routes  # noqa: E402
+
+EXPECTED_CONDITIONS = conditions(False)
 _JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 
 
@@ -129,7 +90,7 @@ def _parse_needs(body: list[str]) -> list[str]:
     return [value] if value else []
 
 
-def _check_dependencies(bodies: dict[str, list[str]]) -> list[str]:
+def _check_dependencies(bodies: dict[str, list[str]], expected_needs) -> list[str]:
     failures = []
     for job, body in bodies.items():
         needs = _parse_needs(body)
@@ -138,7 +99,7 @@ def _check_dependencies(bodies: dict[str, list[str]]) -> list[str]:
         for dependency in needs:
             if dependency not in bodies:
                 failures.append(f"{job}.needs names unknown job '{dependency}'")
-        expected = EXPECTED_NEEDS.get(job)
+        expected = expected_needs.get(job)
         if expected is not None and set(needs) != set(expected):
             failures.append(
                 f"{job} must depend on exactly {', '.join(expected) or 'nothing'}"
@@ -146,20 +107,21 @@ def _check_dependencies(bodies: dict[str, list[str]]) -> list[str]:
     return failures
 
 
-def check(text: str) -> list[str]:
+def check(text: str, *, post_merge: bool = False) -> list[str]:
     """Reject missing, orphaned, or wrongly ordered Pipeline jobs."""
+    expected_needs = POST_MERGE_NEEDS if post_merge else EXPECTED_NEEDS
     try:
         bodies = _job_bodies(text)
-        failures = _check_dependencies(bodies)
+        failures = _check_dependencies(bodies, expected_needs)
     except ValueError as error:
         return [str(error)]
     failures.extend(
-        f"missing Pipeline job '{job}'" for job in EXPECTED_NEEDS if job not in bodies
+        f"missing Pipeline job '{job}'" for job in expected_needs if job not in bodies
     )
     failures.extend(
         f"job '{job}' is outside the Pipeline gates"
         for job in bodies
-        if job not in EXPECTED_NEEDS
+        if job not in expected_needs
     )
     return failures
 
@@ -203,14 +165,14 @@ def _check_merge_results(body: list[str]) -> list[str]:
     return failures
 
 
-def check_runtime_contract(text: str) -> list[str]:
+def check_runtime_contract(text: str, *, post_merge: bool = False) -> list[str]:
     """Require successful prerequisites and the intended merge/release events."""
     try:
         bodies = _job_bodies(text)
-        failures = []
-        for job in EXPECTED_NEEDS:
+        failures = check_profile_route(text, post_merge, _job_bodies, _field)
+        for job, expected in conditions(post_merge).items():
             condition = _field(bodies.get(job, []), "if")
-            if condition != EXPECTED_CONDITIONS.get(job, ""):
+            if condition != expected:
                 failures.append(
                     f"{job} has an unsafe job-level condition: {condition!r}"
                 )
@@ -220,19 +182,24 @@ def check_runtime_contract(text: str) -> list[str]:
                 failures.append(f"{job} must not ignore failures")
         return (
             failures
-            + _check_merge_results(bodies.get("merge", []))
-            + check_sources(bodies, _field, TEST_JOBS, text)
+            + ([] if post_merge else _check_merge_results(bodies.get("merge", [])))
+            + check_sources(bodies, _field, TEST_JOBS, post_merge=post_merge)
         )
     except ValueError as error:
         return [str(error)]
 
 
 def main() -> int:
-    if not CI_WORKFLOW.exists():
-        print(f"FAIL: {CI_WORKFLOW} not found", file=sys.stderr)
-        return 1
-    text = CI_WORKFLOW.read_text(encoding="utf-8")
-    failures = check(text) + check_runtime_contract(text)
+    paths = (CI_WORKFLOW, POST_MERGE_WORKFLOW, CALLER_WORKFLOW)
+    for path in paths:
+        if not path.exists():
+            print(f"FAIL: {path} not found", file=sys.stderr)
+            return 1
+    direct, engine, caller = (path.read_text(encoding="utf-8") for path in paths)
+    failures = check_routes((direct, engine, caller), _job_bodies, _field)
+    for text, post_merge in ((direct, False), (engine, True)):
+        failures += check(text, post_merge=post_merge)
+        failures += check_runtime_contract(text, post_merge=post_merge)
     if failures:
         print("Pipeline gate completeness: FAIL", file=sys.stderr)
         for failure in failures:

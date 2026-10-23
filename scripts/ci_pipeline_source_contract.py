@@ -6,13 +6,9 @@ workflow_run resolver and Record tested commit step (2026-10-23).
 
 from __future__ import annotations
 
-import re
-
 # Source: contract checkout and downstream checkout refs in the shared template.
-SOURCE_REF = (
-    "${{ github.event_name == 'workflow_run' && "
-    "needs.resolve.outputs.tested_sha || github.sha }}"
-)
+SOURCE_REF = "${{ github.sha }}"
+POST_MERGE_REF = "${{ needs.resolve.outputs.tested_sha }}"
 TESTED_REF = "${{ needs.contract.outputs.tested_sha }}"
 
 
@@ -74,12 +70,37 @@ def _check_resolver(body, field) -> list[str]:
     return failures
 
 
-def _check_record(body, field) -> list[str]:
+def _check_receipt(body, field) -> list[str]:
+    """Require the source run and exact direct-job results, including every OS."""
+    run = field(_required_step(body, field, "resolve"), "run")
+    clauses = (
+        'run.get("path") == ".github/workflows/pipeline.yml" '
+        'and run.get("name") == "Pipeline"',
+        'required = ["contract", "unit", "regression", "e2e", "review", "merge"]',
+        'for category in ("environment", "install"):',
+        'for runner in ("ubuntu-latest", "macos-latest", "windows-latest")',
+        "len(actual) == len(expected) and set(actual) == expected",
+        "len(matching) == 1,",
+        'allowed = job.get("conclusion") == "success" or ( name == "review" '
+        'and actor == "dependabot[bot]" and job.get("conclusion") == "skipped" )',
+        'job.get("status") == "completed" and allowed,',
+        "_validate_run(source, repository)",
+        "_validate_run(run, repository)",
+        '_validate_jobs(jobs, run.get("actor", {}).get("login"))',
+    )
+    if any(clause not in run for clause in clauses):
+        return [
+            "resolve must require the direct Pipeline receipt and exact job results"
+        ]
+    return []
+
+
+def _check_record(body, field, source_ref: str) -> list[str]:
     step = _required_step(body, field, "source")
     failures = []
     if not _unconditional(step, field):
         failures.append("contract must unconditionally verify the checked-out SHA")
-    if field(step, "env") != f"EXPECTED_SHA: {SOURCE_REF}":
+    if field(step, "env") != f"EXPECTED_SHA: {source_ref}":
         failures.append("contract must verify the resolved source SHA")
     expected_run = (
         'actual="$(git rev-parse HEAD)" test "$actual" = "$EXPECTED_SHA" '
@@ -143,19 +164,18 @@ def _check_release(body, field) -> list[str]:
     return failures
 
 
-def check_sources(bodies, field, test_jobs, text: str) -> list[str]:
+def check_sources(bodies, field, test_jobs, post_merge=False) -> list[str]:
     """Check producer output bindings, verification, and every consumer checkout."""
-    failures = _check_resolver(bodies.get("resolve", []), field)
-    triggers = text.split("\njobs:", 1)[0]
-    if len(re.findall(r"(?m)^  workflow_call:\s*$", triggers)) != 1 or re.search(
-        r"(?m)^  workflow_run:", triggers
-    ):
-        failures.append("Pipeline must be reusable and cannot listen to itself")
-    failures += _check_record(bodies.get("contract", []), field)
-    failures += _check_merge_confirmation(bodies.get("resolve", []), field)
+    failures = []
+    source_ref = POST_MERGE_REF if post_merge else SOURCE_REF
+    if post_merge:
+        failures += _check_resolver(bodies.get("resolve", []), field)
+        failures += _check_merge_confirmation(bodies.get("resolve", []), field)
+        failures += _check_receipt(bodies.get("resolve", []), field)
+    failures += _check_record(bodies.get("contract", []), field, source_ref)
     failures += _check_release(bodies.get("tag", []), field)
     for job in ("contract", *test_jobs, "tag"):
-        expected = SOURCE_REF if job == "contract" else TESTED_REF
+        expected = source_ref if job == "contract" else TESTED_REF
         if job == "tag":
             expected = "main"
         failures += _check_checkout(bodies.get(job, []), field, expected, job)
