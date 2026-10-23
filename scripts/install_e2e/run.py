@@ -80,11 +80,16 @@ def _init(machine: host.Machine, sandbox: list) -> dict:
     shown = io.StringIO()
     with contextlib.redirect_stdout(shown), contextlib.redirect_stderr(shown):
         code = init_plugin.init([*sandbox, *machine.cli], host.PLUGIN_ID, machine.env)
-    return {
+    result = {
         "returncode": code,
         "output": shown.getvalue(),
         "seconds": round(time.monotonic() - started, 2),
     }
+    if code:
+        result["failure_logs"] = evidence.setup_failure_logs(
+            machine.plugin_data, machine.work
+        )
+    return result
 
 
 def _plugin_root(machine: host.Machine, sandbox: list) -> str | None:

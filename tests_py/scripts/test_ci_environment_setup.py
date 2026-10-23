@@ -30,6 +30,9 @@ class EnvironmentSetup(unittest.TestCase):
         inherited = {
             "PATH": "/system/bin",
             "SystemRoot": "C:/Windows",
+            "USERNAME": "runneradmin",
+            "USERDOMAIN": "BUILDHOST",
+            "GH_TOKEN": "must-not-be-inherited",
             "DATABASE_URL": "postgresql://production/store",
             "CORTEX_MEMORY_STORE_BACKEND": "sqlite",
             "PYTHONPATH": "/another/runtime",
@@ -42,9 +45,12 @@ class EnvironmentSetup(unittest.TestCase):
             "CORTEX_MEMORY_STORE_BACKEND",
             "PYTHONPATH",
             "PGSERVICE",
+            "GH_TOKEN",
         ):
             self.assertNotIn(forbidden, result)
         self.assertEqual(result["SystemRoot"], "C:/Windows")
+        self.assertEqual(result["USERNAME"], "runneradmin")
+        self.assertEqual(result["USERDOMAIN"], "BUILDHOST")
         self.assertEqual(result["CORTEX_CLAUDE_DIR"], str(work / "home/.claude"))
         self.assertEqual(result["HOME"], result["USERPROFILE"])
 

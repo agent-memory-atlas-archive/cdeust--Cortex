@@ -86,6 +86,9 @@ class InstallPlatforms(unittest.TestCase):
             inherited = {
                 "PATH": "system-tools",
                 "SystemRoot": "C:/Windows",
+                "USERNAME": "runneradmin",
+                "USERDOMAIN": "BUILDHOST",
+                "GH_TOKEN": "must-not-be-inherited",
                 "DATABASE_URL": "postgresql://production",
                 "PYTHONPATH": "other-runtime",
             }
@@ -93,10 +96,38 @@ class InstallPlatforms(unittest.TestCase):
                 result = host._machine_environment(home, home / "python", windows=True)
             self.assertIn("system-tools", result["PATH"])
             self.assertEqual(result["SystemRoot"], "C:/Windows")
+            self.assertEqual(result["USERNAME"], "runneradmin")
+            self.assertEqual(result["USERDOMAIN"], "BUILDHOST")
+            self.assertNotIn("GH_TOKEN", result)
             self.assertEqual(result["USERPROFILE"], str(home))
             self.assertEqual(result["APPDATA"], str(home / "appdata"))
             self.assertNotIn("DATABASE_URL", result)
             self.assertNotIn("PYTHONPATH", result)
+
+    def test_setup_diagnostics_are_collected_only_for_a_failed_setup(self):
+        machine = SimpleNamespace(
+            cli=("claude",), env={}, plugin_data=Path("data"), work=Path("work")
+        )
+        for code in (0, 1):
+            with (
+                self.subTest(code=code),
+                patch.object(probe.init_plugin, "init", return_value=code),
+                patch.object(
+                    probe.evidence,
+                    "setup_failure_logs",
+                    return_value={"setup.log": "base install failed"},
+                ) as logs,
+            ):
+                result = probe._init(machine, [])
+            self.assertEqual(result["returncode"], code)
+            if code:
+                logs.assert_called_once_with(machine.plugin_data, machine.work)
+                self.assertEqual(
+                    result["failure_logs"]["setup.log"], "base install failed"
+                )
+            else:
+                logs.assert_not_called()
+                self.assertNotIn("failure_logs", result)
 
     def test_native_python_alias_remains_beside_its_venv_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

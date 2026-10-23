@@ -35,6 +35,8 @@ def isolated_environment(work: Path, inherited: dict[str, str]) -> dict[str, str
         "TERM",
         "USER",
         "LOGNAME",
+        "USERNAME",
+        "USERDOMAIN",
     )
     env = {key: inherited[key] for key in kept if key in inherited}
     home = work / "home"

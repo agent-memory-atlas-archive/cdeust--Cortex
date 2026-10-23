@@ -31,7 +31,17 @@ SYSTEM_PATH = (
 )  # source: a clean macOS / Linux PATH
 CLI_TIMEOUT_SECONDS = 900  # source: measured first launch upper bound, brief step 0
 
-_KEPT_ENV = ("LANG", "LC_ALL", "TERM", "TMPDIR", "USER", "LOGNAME", "SHELL")
+_KEPT_ENV = (
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "USERNAME",
+    "USERDOMAIN",
+)
 
 _WRAPPER = """#!/bin/sh
 # Records each plugin process the host starts, then runs the real interpreter.

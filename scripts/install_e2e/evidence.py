@@ -16,6 +16,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 # Strings a zero-ops user must never be told.
 # source: the owner's acceptance, brief step 0
@@ -92,6 +93,52 @@ def forbidden_lines(*texts: str) -> list:
     return [
         line for text in texts for line in text.splitlines() if FORBIDDEN.search(line)
     ]
+
+
+def _diagnostic_text(text: str) -> str:
+    """Keep installer errors, removing authorization lines and URL access data."""
+
+    def clean_url(match: re.Match) -> str:
+        try:
+            parts = urlsplit(match.group())
+        except ValueError:
+            return "[redacted malformed URL]"
+        return urlunsplit(
+            (parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", "")
+        )
+
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if re.search(
+            r"(?i)(password|passwd|token|secret|authorization|api[_-]?key)\b", line
+        ):
+            lines.append("[redacted sensitive diagnostic line]\n")
+        else:
+            lines.append(
+                re.sub(r"(?:https?|postgresql)://[^\s\"'<>]+", clean_url, line)
+            )
+    return "".join(lines)
+
+
+def setup_failure_logs(data: Path, work: Path) -> dict[str, str]:
+    """Read only the owned install's known logs, before later sessions modify them."""
+    root = data.resolve()
+    if not root.is_relative_to(work.resolve()):
+        return {"error": "refused plugin data outside owned work"}
+    found = {}
+    # source: log filenames defined by launcher_setup.py and launcher_base_job.py.
+    for name in ("setup.log", "deps-install.log"):
+        path = data / name
+        if path.is_symlink() or path.resolve().parent != root:
+            found[name] = "refused log outside owned plugin data"
+        elif path.is_file():
+            try:
+                found[name] = _diagnostic_text(
+                    path.read_text(encoding="utf-8", errors="replace")
+                )
+            except OSError as exc:
+                found[name] = f"log unreadable: {type(exc).__name__}"
+    return found or {"error": "no Setup or dependency log was written"}
 
 
 def _windows_processes(markers: tuple) -> list:
