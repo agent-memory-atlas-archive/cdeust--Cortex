@@ -35,3 +35,11 @@ Claude acceptance requires a fresh PR event after installation. Earlier installa
 The first fresh PR run, [40570016061](https://github.com/cdeust/Cortex/actions/runs/40570016061), selected agent mode but failed before Claude execution with 401 Invalid OIDC token. This reproduces [upstream issue 713](https://github.com/anthropics/claude-code-action/issues/713): the App token exchange rejects pull_request_target events.
 
 PR 808 supplies the documented github_token input from the short-lived GITHUB_TOKEN and removes id-token permission from the automatic review job. Claude still authenticates to Anthropic using the existing OAuth secret. Automatic review comments therefore publish as github-actions[bot], while the reviewer is Claude; they are not attributed to claude[bot]. Owner mention mode retains its existing App authentication. The regression test fails without explicit GitHub authentication and passes with it.
+
+## Official workflow layout
+
+Use the two upstream templates supplied by the owner: [.github/workflows/claude-review.yml](https://github.com/anthropics/claude-code-action/blob/8041f1d17e0e7d2f2cfe35002962e9f26237c0bb/.github/workflows/claude-review.yml) for automatic reviews and [.github/workflows/claude.yml](https://github.com/anthropics/claude-code-action/blob/8041f1d17e0e7d2f2cfe35002962e9f26237c0bb/.github/workflows/claude.yml) for owner mentions. The automatic template invokes the copied review-pr command and its five upstream reviewer agents.
+
+Cortex adaptations are its standard Ubuntu runner and existing OAuth account, SHA-pinned actions, trusted-base event and checkout, supported short-lived GitHub token, subprocess isolation, and owner-authorized mention events. Pre-approve the command's gh pr view/diff/comment operations using the scoped rules documented in upstream solutions.md, and explicitly request a GitHub completion comment. The source workflow's auto permission mode and model are retained.
+
+Automatic slash-command runs 40574869832 attempts 1 and 2 returned SDK success but published no review; attempt 1 recorded one permission denial. These are authentication evidence only. Hosted acceptance requires the final configuration to execute and publish a review on a fresh PR head.
