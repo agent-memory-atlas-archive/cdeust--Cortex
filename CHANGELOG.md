@@ -8,11 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
-- Pull requests run only the Pipeline workflow; the legacy CI, CodeQL, fuzz, identity and scanner workflows are removed; security is reviewed locally with the security-review skill.
+- Claude review and repair actions are removed following the owner decision.
+- Duplicate legacy CI workflows are retired. Pipeline, required CodeQL and the
+  protected merge resolver remain active.
 
 ### Fixed
 
 - The `merge` job of `.github/workflows/pipeline.yml` sets `GH_REPO: ${{ github.repository }}` on its `gh pr merge` step: the job runs without a checkout, so gh could not infer the repository and failed with `fatal: not a git repository` after every stage was green (session-optimizer #65, run 39756969927, 2026-10-22).
+
+- CI requires completed native Codex code and security reviews on the current
+  head. Unresolved findings block protected integration. Partial reruns retain
+  successful prerequisites and supersede obsolete skipped matrix placeholders.
 
 ### Added
 
