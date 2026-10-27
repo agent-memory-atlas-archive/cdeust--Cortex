@@ -19,9 +19,11 @@ from typing import Any
 
 # The wrapper checks out trusted main; isolated Python may still load these files.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ci_claude_review_gate as gate  # noqa: E402
+import ci_claude_reviews as claude  # noqa: E402
 import ci_codex_review_event_source as source  # noqa: E402
 from ci_codex_reviews import EvidenceError, REPO_PATTERN, _json, review_evidence  # noqa: E402
-from ci_codex_review_resume import resumption_plan  # noqa: E402
+from ci_codex_review_resume import combined_proof, resumption_plan  # noqa: E402
 
 Record = dict[str, Any]
 EVENTS = ("issue_comment", "workflow_run")
@@ -98,8 +100,28 @@ def _superseded_placeholder(effective: dict[str, Record], category: str) -> bool
 def _proof(repo: str, number: int, run: Record, jobs: list[Record]) -> Record:
     sha = run["head_sha"]
     rows = source.records(f"repos/{repo}/issues/{number}/comments")
-    result = review_evidence(rows, sha)
+    result = review_evidence(rows, sha, repo, number)
     if result.get("reason") in ("protocol", "arguments"):
+        raise EvidenceError("protocol")
+    return combined_proof(result, _claude_proof(repo, number, sha))
+
+
+def _claude_proof(repo: str, number: int, sha: str) -> Record:
+    """Main's claude.yml decides whether claude[bot] reviews join the proof.
+
+    Without this, a green waiting Pipeline would be rerun on every completion
+    while Claude is pending: each rerun ends as 'merge pending review' again.
+    """
+    try:
+        required = gate.main_requires_claude(repo, source._api)
+    except gate.EvidenceError as exc:
+        raise EvidenceError("protocol") from exc
+    if not required:
+        return {"state": "not_required", "reason": "not_required", "sha": sha}
+    rows = source.records(f"repos/{repo}/pulls/{number}/reviews")
+    # Run provenance goes through the reader's own gh wrapper: a 404 is an answer.
+    result = claude.review_evidence(rows, sha, claude.attest(repo, sha))
+    if result.get("reason") in ("protocol", "arguments", "api"):
         raise EvidenceError("protocol")
     return result
 
@@ -153,6 +175,11 @@ def coordinate(name: str, event: Record, repo: str) -> Record:
     trigger = source.event_pr(name, event, repo)
     if trigger is None:
         return NONE.copy()
+    return resume(repo, trigger)
+
+
+def resume(repo: str, trigger: Record) -> Record:
+    """Rerun the waiting gate for a server-derived {number, sha, run_id} trigger."""
     number = trigger["number"]
     if number != _expected_pr():
         return NONE.copy()
