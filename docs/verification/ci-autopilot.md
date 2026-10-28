@@ -19,7 +19,7 @@ wake an owner issue. Trusted follow-up requirements change the revision and
 remain eligible even if they arrive while a worker finishes.
 Inspection never launches, replays or releases a worker.
 Identical snapshots do not launch an LLM. Changed heads or terminal results
-wake repair. Issue intake paginates the REST API. PR intake has an explicit
+wake repair. Issue intake paginates GraphQL issue and comment connections. PR intake has an explicit
 CLI limit and fails rather than silently discarding a full result set.
 
 A control-plane worker edits a PR or issue branch through the GitHub Git Data
@@ -77,3 +77,90 @@ for that label in the current gui domain. No system daemon or sudo is used.
 - [Codex noninteractive authentication](https://learn.chatgpt.com/docs/non-interactive-mode)
 - Orca CLI version-matched orchestration and recovery guides, read 2026-10-27.
 - macOS launchd.plist(5): ProgramArguments, StartInterval and RunAtLoad.
+
+## Authenticated revisions and review reconciliation (2026-10-28)
+
+Issue intake obtains the repository owner's immutable GitHub User ID and each
+issue/comment's author, editor and lastEditedAt in GraphQL responses. Automatic
+owner requirements require the same owner identity at authorship and, when
+edited, at the last edit. Pristine content requires both editor and lastEditedAt
+to be null. Missing metadata on relevant owner content, a different editor or an
+inconsistent owner ID cannot authorize a worker. Unrelated deleted-author
+discussion does not block an otherwise authenticated owner request. An altered
+owner-authored comment blocks that issue,
+including when its approval marker has been removed. Other authors still need
+an authenticated owner approval of the exact current snapshot digest. Existing
+approvals using the earlier snapshot shape must be renewed for the new digest.
+
+Title ownership is checked separately because body-edit metadata does not prove
+who last changed the title. The same query reads the latest filtered
+RenamedTitleEvent. An owner-authored issue requires either a complete empty
+rename history or a latest event whose immutable actor identity is the owner
+and whose currentTitle matches the returned issue title. Incomplete history,
+foreign rename actors and title provenance changing between pages are rejected.
+External issues retain explicit owner approval of the exact snapshot title.
+
+Comment pagination stays in GraphQL so body and last-editor metadata belong to
+the same returned row. Incomplete/duplicate comments, repeated cursors, GraphQL
+errors, or an issue revision changing between pages fail closed. This is current
+GitHub edit attribution, not a cryptographic signature or a guarantee that all
+paginated rows form an atomic snapshot.
+
+The existing local polling loop also recognizes a completed review-only wait.
+Only PRs whose named test/environment/install prerequisites are green and whose
+other checks have no unrelated failures qualify for an authenticated evidence
+read. Drafts, holds, forks, active owners and pending checks remain excluded.
+A per-PR isolated Python subprocess reads the current native proof and classifies
+repair or wait for the exact repository, PR and expected head. GitHub's workflow
+is the sole issuer of native gate reruns; the local helper never calls resume or
+POST. It reuses the existing coordinator's read-only run/job/proof policy. This
+avoids a race between the local dispatcher and GitHub's per-PR concurrency group.
+
+Missing, running, failed or invalid review proof remains a wait; genuine current
+unresolved findings can enter the existing serialized repair path. When proof is
+clean, the helper reads the trusted latest run and effective attempt jobs. A
+ready native gate waits for the GitHub workflow. A completed review job's
+non-readiness failure, or a completed merge job's non-readiness failure after
+a successful review, can request infrastructure repair. Both require green
+test prerequisites and no unrelated failures. It reuses the native policy's
+readiness predicate and rechecks the run, head and proof before doing so. A
+waiting PR does not block other actionable work. Unchanged repair snapshots cannot
+start another worker. Completed review waits are revisited because resolving a
+thread does not necessarily change the PR head or check fingerprint.
+
+Known evidence errors carry fixed api, protocol, environment or eligibility
+categories in JSON. The dispatcher logs the category and PR, preserving useful
+diagnostics without copying raw child stderr or exception text. Unknown program
+errors still surface as failures rather than authorizing a repair.
+
+The installer copies and hashes the native evidence/event modules alongside the
+dispatcher. It does not copy candidate sources. Installation and launchd enabling
+remain separate operations. This service configuration still handles one
+repository and one durable active dispatch; it does not create parallel workers
+for the other repositories. Keep the existing control worktree and user-retained
+terminals when reconciling an accepted completion.
+
+The installer passes its polling interval both as launchd StartInterval and as
+the dispatcher's --interval. Values must be positive integers. The optional CLI
+flag defaults to the existing 60-second service interval, preserving earlier
+--inspect commands. Each helper runs in its own POSIX session. Its nominal
+communication budget is one configured interval; on failure or timeout only
+that owned group is terminated, its pipes are closed and its leader wait is
+bounded separately by one interval. This is not a guarantee of 60 seconds total:
+exceptional cleanup has its own bounded budget. Other user sessions are not
+signalled, and the installed service is not altered by source validation.
+
+Primary field verification: a read-only GitHub GraphQL query on 2026-10-28
+returned cdeust/Cortex issue683's owner and author as User
+MDQ6VXNlcjMxNjc3Njc=, with editor=null and lastEditedAt=null.
+[GitHub IssueComment fields](https://docs.github.com/en/graphql/reference/objects#issuecomment)
+and [Issue fields](https://docs.github.com/en/graphql/reference/objects#issue)
+describe the attribution consumed here.
+
+A read-only probe of [VS Code issue334398](https://github.com/microsoft/vscode/issues/334398)
+found a recorded title rename with editor=null and lastEditedAt=null. This proves
+that body attribution alone does not cover the title; the observed rename actor
+was the original author, not a reproduced foreign-writer attack.
+[RenamedTitleEvent fields](https://docs.github.com/en/graphql/reference/objects#renamedtitleevent)
+provide the separate attribution. On official claude-code-action issue1445,
+last:1 selected the current title from two rename events while first:1 did not.

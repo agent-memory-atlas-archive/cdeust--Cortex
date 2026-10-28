@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dispatch local Codex workers only for changed GitHub work, through Orca.
 
-Owner request2026-10-27. launchd provides scheduling; no model call while idle.
+Owner request 2026-10-27. launchd provides scheduling; no model call while idle.
 Sources: Orca version-matched orchestration guide; docs/verification/ci-autopilot.md.
 """
 
@@ -15,6 +15,7 @@ import uuid
 from ci_autopilot_queue import candidates
 from ci_autopilot_issues import intake
 from ci_autopilot_status import publish
+from ci_autopilot_review import DEFAULT_INTERVAL, reconcile
 
 # source: gh pr list --help (--limit); fail closed if this operational bound is hit.
 PR_INTAKE_LIMIT = 1000
@@ -26,7 +27,7 @@ def command(argv: list[str], cwd: Path):
 
 
 def orca(options, *args):
-    # worker-start can exit1 with a durable, live outcome_unknown Dispatch.
+    # worker-start can exit 1 with a durable, live outcome_unknown Dispatch.
     done = subprocess.run(
         [options.orca, *args, "--json"],
         cwd=options.repo,
@@ -201,33 +202,48 @@ def tick(options, state):
     if not settle(options, state, items):
         publish(options, github, state["active"], "dispatched")
         return {"state": "worker_active"}
+    return next_item(options, state, items)
+
+
+def arm_merge(options, state, item):
+    subprocess.run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            str(item["number"]),
+            "--repo",
+            options.repository,
+            "--auto",
+            "--squash",
+            "--match-head-commit",
+            item["sha"],
+        ],
+        cwd=options.repo,
+        check=True,
+    )
+    state["seen"][f"merge:{item['number']}"] = item["fingerprint"]
+    return {"state": "auto_merge_armed", "item": item}
+
+
+def next_item(options, state, items):
+    waiting = {"state": "idle"}
     for item in items:
+        if item["kind"] == "review_resume" and not options.inspect:
+            result = reconcile(options, item)
+            if result["action"] == "none":
+                waiting = {"state": "review_wait", "item": item, "result": result}
+                continue
+            item = {**item, "kind": "pull"}
         key = f"{item['kind']}:{item['number']}"
         if state["seen"].get(key) == item["fingerprint"]:
             continue
         if options.inspect:
             return {"state": "ready", "item": item}
         if item["kind"] == "merge":
-            subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "merge",
-                    str(item["number"]),
-                    "--repo",
-                    options.repository,
-                    "--auto",
-                    "--squash",
-                    "--match-head-commit",
-                    item["sha"],
-                ],
-                cwd=options.repo,
-                check=True,
-            )
-            state["seen"][key] = item["fingerprint"]
-            return {"state": "auto_merge_armed", "item": item}
+            return arm_merge(options, state, item)
         return launch(options, state, item)
-    return {"state": "idle"}
+    return waiting
 
 
 def main():
@@ -240,7 +256,10 @@ def main():
     parser.add_argument("--orca", default="/usr/local/bin/orca")
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--status-comments", action="store_true")
+    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     options = parser.parse_args()
+    if options.interval <= 0:
+        parser.error("Polling interval must be positive")
     options.state.parent.mkdir(parents=True, exist_ok=True)
     with options.state.with_suffix(".lock").open("w") as lock:
         try:
